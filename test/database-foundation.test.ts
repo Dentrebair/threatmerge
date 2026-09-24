@@ -51,7 +51,7 @@ async function authenticate(db: PGlite, userId: string) {
 
 describe("database foundation", () => {
   let db: PGlite;
-  beforeEach(async () => { db = await database(); });
+  beforeEach(async () => { db = await database(); }, 30_000);
 
   it("isolates tenant rows through RLS", async () => {
     await authenticate(db, ids.userA);
@@ -588,7 +588,7 @@ describe("database foundation", () => {
     `);
     await authenticate(db, ids.userA);
     const health = await db.query<{ completion_percent: number; missing_documents: number; invoice_conflicts: number; outstanding_by_currency: { USD: number; EUR: number }; calculation_version: string }>(`select completion_percent, missing_documents, invoice_conflicts, outstanding_by_currency, calculation_version from list_transaction_health('${ids.tenantA}') where transaction_file_id = '${transactionId}'`);
-    expect(health.rows[0]).toMatchObject({ completion_percent: 50, missing_documents: 0, invoice_conflicts: 0, calculation_version: "requirements-v1" });
+    expect(health.rows[0]).toMatchObject({ completion_percent: 50, missing_documents: 0, invoice_conflicts: 0, calculation_version: "requirements-payments-v2" });
     expect(health.rows[0]?.outstanding_by_currency).toEqual({ EUR: 50, USD: 100 });
     await expect(db.query(`select * from list_transaction_health('${ids.tenantB}')`)).rejects.toThrow(/workspace not found/);
   });
@@ -696,6 +696,11 @@ describe("database foundation", () => {
     const second = await db.query<{ document_version_id: string }>(`select document_version_id from register_transaction_document_version('${transactionId}', 4, 'closing-disclosure', 'Closing disclosure', '${evidenceTwo}', '2035-01-01', '${ids.userA}')`);
     const projection = await db.query<{ version: number; effective_status: string; file_name: string }>(`select version, effective_status, file_name from list_transaction_documents('${ids.tenantA}') where transaction_file_id = '${transactionId}'`);
     expect(projection.rows).toEqual([{ version: 2, effective_status: "RECEIVED", file_name: "closing-v2.pdf" }]);
+    const history = await db.query<{ version: number; effective_status: string; file_name: string; is_current: boolean }>(`select version, effective_status, file_name, is_current from list_transaction_document_history('${ids.tenantA}') where transaction_file_id = '${transactionId}' order by version desc`);
+    expect(history.rows).toEqual([
+      { version: 2, effective_status: "RECEIVED", file_name: "closing-v2.pdf", is_current: true },
+      { version: 1, effective_status: "VERIFIED", file_name: "closing-v1.pdf", is_current: false },
+    ]);
     await db.exec("reset role");
     expect((await db.query(`select version from transaction_document_versions where document_id = '${first.rows[0]!.document_id}' order by version`)).rows).toEqual([{ version: 1 }, { version: 2 }]);
     await expect(db.exec(`delete from transaction_document_versions where id = '${first.rows[0]!.document_version_id}'`)).rejects.toThrow(/append-only/);
@@ -704,6 +709,152 @@ describe("database foundation", () => {
     await db.query(`select review_transaction_document('${transactionId}', 5, '${second.rows[0]!.document_version_id}', 'REJECTED', 'Signature page is missing', '${ids.userA}')`);
     expect((await db.query(`select status from transaction_requirement_statuses where transaction_file_id = '${transactionId}' and requirement_key = 'closing-disclosure'`)).rows).toEqual([{ status: "MISSING" }]);
     expect((await db.query(`select status from work_items where record_id = '${transactionId}' and blocker_code = 'REQUIREMENT:ARTIFACT:closing-disclosure' order by created_at desc limit 1`)).rows).toEqual([{ status: "WAITING_FOR_EVIDENCE" }]);
+  });
+
+  it("keeps verified documents under review and advances only after review gates pass", async () => {
+    const evidence = "00000000-0000-4000-8000-000000000094";
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'PURCHASE'`);
+    const created = await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '31 Review Road', '${type.rows[0]!.id}', '${ids.userA}', 'Buyer', 'PERSON', 'BUYER', '${ids.userA}') as id`);
+    const transactionId = created.rows[0]!.id;
+    await db.query(`select add_transaction_requirement('${transactionId}', 1, 'ARTIFACT', 'purchase-agreement', '${ids.userA}')`);
+    await db.exec("reset role");
+    await db.exec(`insert into evidence_artifacts (id, tenant_id, storage_path, media_type, byte_size, sha256, safety_status) values
+      ('${evidence}', '${ids.tenantA}', '${ids.tenantA}/docs/agreement.pdf', 'application/pdf', 100, '${"7".repeat(64)}', 'SAFE')`);
+    await authenticate(db, ids.userA);
+    const registered = await db.query<{ document_version_id: string }>(`select document_version_id from register_transaction_document_version('${transactionId}', 2, 'purchase-agreement', 'Purchase agreement', '${evidence}', null, '${ids.userA}')`);
+    await db.query(`select begin_transaction_work('${transactionId}', 3, '${ids.userA}')`);
+    await db.query(`select submit_transaction_for_review('${transactionId}', 4, '${ids.userA}')`);
+
+    await expect(db.query(`select complete_transaction_review('${transactionId}', 5, '${ids.userA}')`)).rejects.toThrow(/verify 1 required document/);
+    expect((await db.query<{ version: number }>(`select review_transaction_document('${transactionId}', 5, '${registered.rows[0]!.document_version_id}', 'VERIFIED', null, '${ids.userA}') as version`)).rows[0]?.version).toBe(6);
+    expect((await db.query(`select business_stage, version from transaction_files where id = '${transactionId}'`)).rows).toEqual([{ business_stage: "UNDER_REVIEW", version: 6 }]);
+    await db.exec("reset role");
+    await authenticate(db, ids.viewerA);
+    await expect(db.query(`select complete_transaction_review('${transactionId}', 6, '${ids.viewerA}')`)).rejects.toThrow(/role cannot review/);
+    await db.exec("reset role");
+    await authenticate(db, ids.userA);
+    expect((await db.query<{ stage: string }>(`select complete_transaction_review('${transactionId}', 6, '${ids.userA}')::text as stage`)).rows[0]?.stage).toBe("READY_FOR_CLOSING");
+    expect((await db.query(`select business_stage, version from transaction_files where id = '${transactionId}'`)).rows).toEqual([{ business_stage: "READY_FOR_CLOSING", version: 7 }]);
+    await expect(db.query(`select complete_transaction_review('${transactionId}', 7, '${ids.userA}')`)).rejects.toThrow(/not under review/);
+  });
+
+  it("reopens document collection when a submitted document is rejected", async () => {
+    const evidence = "00000000-0000-4000-8000-000000000095";
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'SALE'`);
+    const created = await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '32 Review Road', '${type.rows[0]!.id}', '${ids.userA}', 'Seller', 'PERSON', 'SELLER', '${ids.userA}') as id`);
+    const transactionId = created.rows[0]!.id;
+    await db.query(`select add_transaction_requirement('${transactionId}', 1, 'ARTIFACT', 'closing-disclosure', '${ids.userA}')`);
+    await db.exec("reset role");
+    await db.exec(`insert into evidence_artifacts (id, tenant_id, storage_path, media_type, byte_size, sha256, safety_status) values
+      ('${evidence}', '${ids.tenantA}', '${ids.tenantA}/docs/disclosure.pdf', 'application/pdf', 100, '${"6".repeat(64)}', 'SAFE')`);
+    await authenticate(db, ids.userA);
+    const registered = await db.query<{ document_version_id: string }>(`select document_version_id from register_transaction_document_version('${transactionId}', 2, 'closing-disclosure', 'Closing disclosure', '${evidence}', null, '${ids.userA}')`);
+    await db.query(`select begin_transaction_work('${transactionId}', 3, '${ids.userA}')`);
+    await db.query(`select submit_transaction_for_review('${transactionId}', 4, '${ids.userA}')`);
+    await db.query(`select review_transaction_document('${transactionId}', 5, '${registered.rows[0]!.document_version_id}', 'REJECTED', 'Signature page is missing', '${ids.userA}')`);
+
+    expect((await db.query(`select business_stage, version from transaction_files where id = '${transactionId}'`)).rows).toEqual([{ business_stage: "DOCUMENTS_PENDING", version: 6 }]);
+    expect((await db.query(`select status from transaction_requirement_statuses where transaction_file_id = '${transactionId}' and requirement_key = 'closing-disclosure'`)).rows).toEqual([{ status: "MISSING" }]);
+  });
+
+  it("tracks linked-invoice payments without changing invoice verification", async () => {
+    const invoiceId = "00000000-0000-4000-8000-000000000096";
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'PURCHASE'`);
+    const created = await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '40 Payment Lane', '${type.rows[0]!.id}', '${ids.userA}', 'Buyer', 'PERSON', 'BUYER', '${ids.userA}') as id`);
+    const transactionId = created.rows[0]!.id;
+    await db.exec("reset role");
+    await db.exec(`
+      insert into invoice_candidates (id, tenant_id, issuer_id, transaction_file_id, origin, lifecycle, linkage_status, source_invoice_number, currency, total, schema_fingerprint)
+      values ('${invoiceId}', '${ids.tenantA}', '${ids.issuerA}', '${transactionId}', 'CAPTURED', 'VERIFIED', 'LINKED', 'INV-40', 'USD', 100, 'schema');
+      insert into invoice_field_values (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method)
+      values ('${ids.tenantA}', '${invoiceId}', 'due_date', '"2030-05-01"'::jsonb, 'REVIEWER_ENTERED');
+    `);
+    await authenticate(db, ids.userA);
+    expect((await db.query(`select vendor, invoice_number, payment_status, outstanding_amount, due_date::text from list_transaction_invoices('${ids.tenantA}') where invoice_candidate_id = '${invoiceId}'`)).rows).toEqual([{ vendor: "Issuer A", invoice_number: "INV-40", payment_status: "UNPAID", outstanding_amount: "100.0000", due_date: "2030-05-01" }]);
+    expect((await db.query<{ version: number }>(`select set_transaction_invoice_payment('${transactionId}', 1, '${invoiceId}', 'PARTIALLY_PAID', 40, null, null, '${ids.userA}') as version`)).rows[0]?.version).toBe(2);
+    expect((await db.query(`select payment_status, paid_amount, outstanding_amount from list_transaction_invoices('${ids.tenantA}') where invoice_candidate_id = '${invoiceId}'`)).rows).toEqual([{ payment_status: "PARTIALLY_PAID", paid_amount: "40.0000", outstanding_amount: "60.0000" }]);
+    expect((await db.query<{ outstanding: Record<string, number>; calculation_version: string }>(`select outstanding_by_currency as outstanding, calculation_version from list_transaction_health('${ids.tenantA}') where transaction_file_id = '${transactionId}'`)).rows[0]).toEqual({ outstanding: { USD: 60 }, calculation_version: "requirements-payments-v2" });
+    await expect(db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'PAID', 99, null, null, '${ids.userA}')`)).rejects.toThrow(/must equal/);
+    await expect(db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'SCHEDULED', 0, null, null, '${ids.userA}')`)).rejects.toThrow(/date is required/);
+    await expect(db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'DISPUTED', 40, null, null, '${ids.userA}')`)).rejects.toThrow(/reason is required/);
+    await db.exec("reset role");
+    await authenticate(db, ids.viewerA);
+    await expect(db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'PAID', 100, null, null, '${ids.viewerA}')`)).rejects.toThrow(/only the assigned owner/);
+    await db.exec("reset role");
+    await authenticate(db, ids.userA);
+    await db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'DISPUTED', 40, null, 'Amount is under review', '${ids.userA}')`);
+    expect((await db.query<{ lifecycle: string }>(`select lifecycle::text from invoice_candidates where id = '${invoiceId}'`)).rows[0]?.lifecycle).toBe("VERIFIED");
+    expect((await db.query<{ outstanding: Record<string, number> }>(`select outstanding_by_currency as outstanding from list_transaction_health('${ids.tenantA}') where transaction_file_id = '${transactionId}'`)).rows[0]?.outstanding).toEqual({});
+    await expect(db.query(`select set_transaction_invoice_payment('${transactionId}', 2, '${invoiceId}', 'UNPAID', 0, null, null, '${ids.userA}')`)).rejects.toThrow(/changed; refresh/);
+  });
+
+  it("tracks manual and generated Transaction File issues", async () => {
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'PURCHASE'`);
+    const created = await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '41 Issue Lane', '${type.rows[0]!.id}', '${ids.userA}', 'Buyer', 'PERSON', 'BUYER', '${ids.userA}') as id`);
+    const transactionId = created.rows[0]!.id;
+    await db.query(`select add_transaction_requirement('${transactionId}', 1, 'FIELD', 'tax-id', '${ids.userA}')`);
+    const issue = await db.query<{ id: string }>(`select create_transaction_issue('${transactionId}', 2, 'Confirm wire instructions', 'PAYMENT', 'HIGH', true, '${ids.userA}', '2030-05-01', '${ids.userA}') as id`);
+    expect((await db.query(`select title, category, severity, is_blocking, source from list_transaction_issues('${ids.tenantA}') where transaction_file_id = '${transactionId}' order by source`)).rows).toEqual([
+      { title: "Missing information", category: "REQUIREMENT", severity: "MEDIUM", is_blocking: true, source: "GENERATED" },
+      { title: "Confirm wire instructions", category: "PAYMENT", severity: "HIGH", is_blocking: true, source: "MANUAL" },
+    ]);
+    await expect(db.query(`select create_transaction_issue('${transactionId}', 3, 'Bad owner', 'OTHER', 'LOW', false, '${ids.userB}', null, '${ids.userA}')`)).rejects.toThrow(/owner must belong/);
+    await db.exec("reset role"); await authenticate(db, ids.viewerA);
+    await expect(db.query(`select create_transaction_issue('${transactionId}', 3, 'Viewer issue', 'OTHER', 'LOW', false, null, null, '${ids.viewerA}')`)).rejects.toThrow(/only the assigned owner/);
+    await db.exec("reset role"); await authenticate(db, ids.userA);
+    expect((await db.query<{ version: number }>(`select resolve_transaction_issue('${issue.rows[0]!.id}', 3, 'Verified with title company', '${ids.userA}') as version`)).rows[0]?.version).toBe(4);
+    await expect(db.query(`select resolve_transaction_issue('${issue.rows[0]!.id}', 4, 'Again', '${ids.userA}')`)).rejects.toThrow(/already resolved/);
+    await expect(db.query(`select create_transaction_issue('${transactionId}', 3, 'Stale', 'OTHER', 'LOW', false, null, null, '${ids.userA}')`)).rejects.toThrow(/changed; refresh/);
+  });
+
+  it("enforces closing, cancellation, and admin-only reopening", async () => {
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'SALE'`);
+    const created = await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '42 Closing Lane', '${type.rows[0]!.id}', '${ids.userA}', 'Seller', 'PERSON', 'SELLER', '${ids.userA}') as id`);
+    const transactionId = created.rows[0]!.id;
+    await db.exec("reset role");
+    await db.exec(`update transaction_files set business_stage = 'READY_FOR_CLOSING' where id = '${transactionId}'`);
+    await authenticate(db, ids.userA);
+    await expect(db.query(`select close_transaction_file('${transactionId}', 1, '${ids.userA}')`)).rejects.toThrow(/closing date/);
+    await db.exec("reset role"); await db.exec(`update transaction_files set key_dates = '{"closingDate":"2030-06-01"}' where id = '${transactionId}'`); await authenticate(db, ids.userA);
+    const issue = await db.query<{ id: string }>(`select create_transaction_issue('${transactionId}', 1, 'Resolve title exception', 'DOCUMENT', 'HIGH', true, null, null, '${ids.userA}') as id`);
+    await expect(db.query(`select close_transaction_file('${transactionId}', 2, '${ids.userA}')`)).rejects.toThrow(/blocking issues/);
+    await db.query(`select resolve_transaction_issue('${issue.rows[0]!.id}', 2, 'Cleared by title company', '${ids.userA}')`);
+    expect((await db.query<{ stage: string }>(`select close_transaction_file('${transactionId}', 3, '${ids.userA}')::text as stage`)).rows[0]?.stage).toBe("CLOSED");
+    await db.exec("reset role"); await authenticate(db, ids.viewerA);
+    await expect(db.query(`select reopen_transaction_file('${transactionId}', 4, 'Need another review', '${ids.viewerA}')`)).rejects.toThrow(/only tenant administrators/);
+    await db.exec("reset role"); await authenticate(db, ids.userA);
+    expect((await db.query<{ stage: string }>(`select reopen_transaction_file('${transactionId}', 4, 'Need another review', '${ids.userA}')::text as stage`)).rows[0]?.stage).toBe("UNDER_REVIEW");
+    await expect(db.query(`select cancel_transaction_file('${transactionId}', 5, '', '${ids.userA}')`)).rejects.toThrow(/reason is required/);
+    expect((await db.query<{ stage: string }>(`select cancel_transaction_file('${transactionId}', 5, 'Deal terminated', '${ids.userA}')::text as stage`)).rows[0]?.stage).toBe("CANCELLED");
+    await expect(db.query(`select cancel_transaction_file('${transactionId}', 5, 'Again', '${ids.userA}')`)).rejects.toThrow(/changed; refresh/);
+  });
+
+  it("requires audited unlink before moving an invoice between Transaction Files", async () => {
+    const invoiceId = "00000000-0000-4000-8000-000000000097";
+    await authenticate(db, ids.userA);
+    const type = await db.query<{ id: string }>(`select id from transaction_types where tenant_id = '${ids.tenantA}' and code = 'PURCHASE'`);
+    const first = (await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '1 First Lane', '${type.rows[0]!.id}', '${ids.userA}', 'Buyer', 'PERSON', 'BUYER', '${ids.userA}') as id`)).rows[0]!.id;
+    const second = (await db.query<{ id: string }>(`select create_transaction_file_v2('${ids.tenantA}', '', '2 Second Lane', '${type.rows[0]!.id}', '${ids.userA}', 'Buyer', 'PERSON', 'BUYER', '${ids.userA}') as id`)).rows[0]!.id;
+    await db.exec("reset role"); await db.exec(`insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, linkage_status, source_invoice_number, currency, total, schema_fingerprint) values ('${invoiceId}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'VERIFIED', 'UNLINKED', 'MOVE-1', 'USD', 100, 'schema')`); await authenticate(db, ids.userA);
+    await db.query(`select * from link_invoice_to_transaction('${invoiceId}', 1, '${first}', 1, '${ids.userA}')`);
+    await db.query(`select set_transaction_invoice_payment('${first}', 2, '${invoiceId}', 'PARTIALLY_PAID', 40, null, null, '${ids.userA}')`);
+    await expect(db.query(`select * from link_invoice_to_transaction('${invoiceId}', 2, '${second}', 1, '${ids.userA}')`)).rejects.toThrow(/unlink.*before linking/);
+    await expect(db.query(`select * from unlink_invoice_from_transaction('${invoiceId}', 2, 3, '', '${ids.userA}')`)).rejects.toThrow(/reason is required/);
+    expect((await db.query(`select * from unlink_invoice_from_transaction('${invoiceId}', 2, 3, 'Wrong property', '${ids.userA}')`)).rows).toEqual([{ invoice_version: 3, transaction_version: 4 }]);
+    expect((await db.query(`select transaction_file_id, linkage_status, lifecycle from invoice_candidates where id = '${invoiceId}'`)).rows).toEqual([{ transaction_file_id: null, linkage_status: "UNLINKED", lifecycle: "VERIFIED" }]);
+    expect((await db.query(`select count(*)::int as count from transaction_invoice_payments where invoice_candidate_id = '${invoiceId}'`)).rows[0]).toEqual({ count: 0 });
+    await db.query(`select * from link_invoice_to_transaction('${invoiceId}', 3, '${second}', 1, '${ids.userA}')`);
+    expect((await db.query(`select count(*)::int as count from work_items where record_id = '${invoiceId}' and kind = 'REVIEW_TRANSACTION_CONTEXT'`)).rows[0]).toEqual({ count: 3 });
+    expect((await db.query(`select count(*)::int as count from work_items where record_id = '${invoiceId}' and kind = 'REVIEW_TRANSACTION_CONTEXT' and status = 'OPEN'`)).rows[0]).toEqual({ count: 1 });
+    expect((await db.query<{ reason: string }>(`select metadata->>'reason' as reason from audit_events where aggregate_id = '${invoiceId}' and event_type = 'INVOICE_UNLINKED_FROM_TRANSACTION'`)).rows[0]?.reason).toBe("Wrong property");
+    expect((await db.query(`select * from resolve_invoice_transaction_context('${invoiceId}', 4, 2, 'Property and parties confirmed', '${ids.userA}')`)).rows).toEqual([{ invoice_version: 5, transaction_version: 3 }]);
+    expect((await db.query(`select count(*)::int as count from work_items where record_id = '${invoiceId}' and kind = 'REVIEW_TRANSACTION_CONTEXT' and status = 'OPEN'`)).rows[0]).toEqual({ count: 0 });
+    await expect(db.query(`select * from resolve_invoice_transaction_context('${invoiceId}', 5, 3, 'Again', '${ids.userA}')`)).rejects.toThrow(/not pending/);
   });
 
   it("rejects unsafe evidence when registering a transaction document", async () => {
@@ -753,6 +904,10 @@ describe("database foundation", () => {
     expect((await db.query(`select cancel_transaction_document_upload('${transactionId}', '${receipt.rows[0]!.ingestion_event_id}', '${ids.userA}') as status`)).rows).toEqual([{ status: "CANCELLED" }]);
     expect((await db.query(`select intent_id from list_transaction_document_uploads('${ids.tenantA}') where transaction_file_id = '${transactionId}'`)).rows).toHaveLength(0);
     expect((await db.query(`select status from transaction_document_upload_intents where evidence_artifact_id = '${receipt.rows[0]!.evidence_artifact_id}'`)).rows).toEqual([{ status: "CANCELLED" }]);
+    const replacement = await db.query<{ evidence_artifact_id: string }>(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/documents/cancel-replacement.pdf', 'application/pdf', 100, '${"d".repeat(64)}', 'document-cancel-replacement', '${ids.userA}')`);
+    await db.query(`select stage_transaction_document_upload('${transactionId}', 4, '${replacement.rows[0]!.evidence_artifact_id}', 'closing-disclosure', 'Closing disclosure', null, '${ids.userA}')`);
+    expect((await db.query(`select intent_id from list_transaction_document_uploads('${ids.tenantA}') where transaction_file_id = '${transactionId}'`)).rows).toHaveLength(1);
+    expect((await db.query<{ version: number }>(`select version from transaction_files where id = '${transactionId}'`)).rows).toEqual([{ version: 5 }]);
   });
 
   it("stores required information values and resolves the owner's work item", async () => {

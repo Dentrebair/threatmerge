@@ -9,8 +9,13 @@ export interface TransactionParty { id: string; name: string; kind: "PERSON" | "
 export interface TransactionImportantDate { id: string; kind: "AGREEMENT" | "INSPECTION" | "FINANCING" | "DOCUMENT_DEADLINE" | "CLOSING" | "HANDOVER"; date: string | null; timestamp: string | null; timezone: string | null }
 export interface TransactionFinancial { id: string; kind: "DEAL_VALUE" | "DEPOSIT" | "COMMISSION" | "TAX" | "FEE"; label: string; amount: number; currency: string }
 export interface TransactionCustomField { id: string; key: string; label: string; dataType: "TEXT" | "NUMBER" | "BOOLEAN" | "DATE"; required: boolean; stageGate: "BEFORE_REVIEW" | "BEFORE_APPROVAL" | "BEFORE_CLOSING"; validation: Record<string, unknown>; value?: unknown }
-export interface TransactionDocument { id: string; name: string; requirementKey: string | null; required: boolean; stageGate: "BEFORE_REVIEW" | "BEFORE_APPROVAL" | "BEFORE_CLOSING"; versionId: string; version: number; fileName: string; uploadedAt: string; expiresOn: string | null; status: "RECEIVED" | "VERIFIED" | "REJECTED" | "EXPIRED"; decisionReason: string | null }
+export interface TransactionDocumentVersion { id: string; version: number; fileName: string; uploadedAt: string; expiresOn: string | null; status: "RECEIVED" | "VERIFIED" | "REJECTED" | "EXPIRED"; decisionReason: string | null; current: boolean }
+export interface TransactionDocument { id: string; name: string; requirementKey: string | null; required: boolean; stageGate: "BEFORE_REVIEW" | "BEFORE_APPROVAL" | "BEFORE_CLOSING"; versionId: string; version: number; fileName: string; uploadedAt: string; expiresOn: string | null; status: "RECEIVED" | "VERIFIED" | "REJECTED" | "EXPIRED"; decisionReason: string | null; history: TransactionDocumentVersion[] }
 export interface TransactionPendingDocumentUpload { id: string; ingestionEventId: string; requirementKey: string | null; documentName: string; status: "WAITING_FOR_SCAN" | "FAILED"; safetyStatus: "PENDING" | "SAFE" | "QUARANTINED"; processingStatus: "QUEUED" | "RUNNING" | "RETRY_SCHEDULED" | "SUCCEEDED" | "FAILED" | "CANCEL_REQUESTED" | "CANCELLED" | null; failureReason: string | null; createdAt: string }
+export type TransactionPaymentStatus = "UNPAID" | "SCHEDULED" | "PARTIALLY_PAID" | "PAID" | "DISPUTED" | "VOIDED";
+export interface TransactionInvoice { id: string; version: number; vendor: string; invoiceNumber: string | null; currency: string; total: number | null; dueDate: string | null; approvalStatus: string; paymentStatus: TransactionPaymentStatus; paidAmount: number; outstandingAmount: number; scheduledFor: string | null; paymentNote: string | null; contextReviewRequired: boolean }
+export type TransactionIssueSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export interface TransactionIssue { id: string; title: string; category: string; severity: TransactionIssueSeverity; blocking: boolean; status: "OPEN" | "WAITING_FOR_EVIDENCE" | "RESOLVED" | "DISMISSED"; ownerUserId: string | null; dueDate: string | null; resolution: string | null; source: "MANUAL" | "GENERATED"; createdAt: string; resolvedAt: string | null }
 export interface TransactionFile {
   id: string;
   externalReference: string;
@@ -32,6 +37,8 @@ export interface TransactionFile {
   customFields?: TransactionCustomField[];
   documents?: TransactionDocument[];
   pendingDocumentUploads?: TransactionPendingDocumentUpload[];
+  invoices?: TransactionInvoice[];
+  issues?: TransactionIssue[];
   requirements: TransactionRequirement[];
 }
 export interface LinkageProposalReason { label: string }
@@ -95,14 +102,17 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
   const { data: contextData, error: contextError } = await supabase.rpc("list_transaction_workspace_context", { target_tenant: tenantId });
   if (contextError) throw new Error(`Unable to load Transaction File context: ${contextError.message}`);
   const context = new Map((contextData as Array<{ transaction_file_id: string; transaction_type_id: string | null; transaction_type_name: string | null; owner_user_id: string | null; primary_party_id: string | null; primary_party_name: string | null; primary_party_role: TransactionPartyRole }>).map((item) => [item.transaction_file_id, item]));
-  const [{ data: partyData, error: partyError }, { data: dateData, error: dateError }, { data: financialData, error: financialError }, { data: customDefinitionData, error: customDefinitionError }, { data: customValueData, error: customValueError }, { data: documentData, error: documentError }, { data: pendingDocumentData, error: pendingDocumentError }] = await Promise.all([
+  const [{ data: partyData, error: partyError }, { data: dateData, error: dateError }, { data: financialData, error: financialError }, { data: customDefinitionData, error: customDefinitionError }, { data: customValueData, error: customValueError }, { data: documentData, error: documentError }, { data: documentHistoryData, error: documentHistoryError }, { data: pendingDocumentData, error: pendingDocumentError }, { data: invoiceData, error: invoiceError }, { data: issueData, error: issueError }] = await Promise.all([
     supabase.from("transaction_party_assignments").select("transaction_file_id,role,is_primary,transaction_parties!inner(id,display_name,party_kind)").eq("tenant_id", tenantId),
     supabase.from("transaction_important_dates").select("id,transaction_file_id,date_kind,date_value,timestamp_value,timezone").eq("tenant_id", tenantId).order("date_kind"),
     supabase.from("transaction_financial_entries").select("id,transaction_file_id,financial_kind,label,amount,currency").eq("tenant_id", tenantId).order("financial_kind"),
     supabase.from("transaction_custom_field_definitions").select("id,transaction_file_id,field_key,label,data_type,required,stage_gate,validation").eq("tenant_id", tenantId).order("label"),
     supabase.from("transaction_custom_field_values").select("transaction_file_id,definition_id,normalized_value").eq("tenant_id", tenantId),
     supabase.rpc("list_transaction_documents", { target_tenant: tenantId }),
+    supabase.rpc("list_transaction_document_history", { target_tenant: tenantId }),
     supabase.rpc("list_transaction_document_uploads", { target_tenant: tenantId }),
+    supabase.rpc("list_transaction_invoices", { target_tenant: tenantId }),
+    supabase.rpc("list_transaction_issues", { target_tenant: tenantId }),
   ]);
   if (partyError) throw new Error(`Unable to load transaction parties: ${partyError.message}`);
   if (dateError) throw new Error(`Unable to load important dates: ${dateError.message}`);
@@ -110,14 +120,27 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
   if (customDefinitionError) throw new Error(`Unable to load required information: ${customDefinitionError.message}`);
   if (customValueError) throw new Error(`Unable to load required information values: ${customValueError.message}`);
   if (documentError) throw new Error(`Unable to load Transaction File documents: ${documentError.message}`);
+  const historyProjectionUnavailable = documentHistoryError?.message.includes("list_transaction_document_history") && documentHistoryError.message.includes("schema cache");
+  if (documentHistoryError && !historyProjectionUnavailable) throw new Error(`Unable to load document history: ${documentHistoryError.message}`);
   if (pendingDocumentError) throw new Error(`Unable to load pending document uploads: ${pendingDocumentError.message}`);
+  const invoiceProjectionUnavailable = invoiceError?.message.includes("list_transaction_invoices") && invoiceError.message.includes("schema cache");
+  if (invoiceError && !invoiceProjectionUnavailable) throw new Error(`Unable to load linked invoices: ${invoiceError.message}`);
+  const issueProjectionUnavailable = issueError?.message.includes("list_transaction_issues") && issueError.message.includes("schema cache");
+  if (issueError && !issueProjectionUnavailable) throw new Error(`Unable to load Transaction File issues: ${issueError.message}`);
+  const { data: contextReviewData, error: contextReviewError } = await supabase.from("work_items").select("record_id")
+    .eq("tenant_id", tenantId).eq("record_type", "INVOICE").eq("kind", "REVIEW_TRANSACTION_CONTEXT").in("status", ["OPEN", "WAITING_FOR_EVIDENCE"]);
+  if (contextReviewError) throw new Error(`Unable to load invoice context reviews: ${contextReviewError.message}`);
+  const contextReviewInvoices = new Set(contextReviewData.map((item) => item.record_id as string));
   const parties = groupByTransaction(partyData, (item) => item.transaction_file_id as string);
   const dates = groupByTransaction(dateData, (item) => item.transaction_file_id as string);
   const financials = groupByTransaction(financialData, (item) => item.transaction_file_id as string);
   const customDefinitions = groupByTransaction(customDefinitionData, (item) => item.transaction_file_id as string);
   const customValues = new Map(customValueData.map((item) => [item.definition_id as string, item.normalized_value]));
   const documents = groupByTransaction(documentData as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
+  const documentHistory = groupByTransaction((documentHistoryData ?? []) as Array<Record<string, unknown>>, (item) => item.document_id as string);
   const pendingDocuments = groupByTransaction(pendingDocumentData as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
+  const linkedInvoices = groupByTransaction((invoiceData ?? []) as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
+  const issues = groupByTransaction((issueData ?? []) as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
   return data.map((row) => ({
     id: row.id as string,
     externalReference: (row.external_reference as string | null) ?? "",
@@ -137,8 +160,13 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
     importantDates: (dates.get(row.id as string) ?? []).map((item) => ({ id: item.id as string, kind: item.date_kind as TransactionImportantDate["kind"], date: item.date_value as string | null, timestamp: item.timestamp_value as string | null, timezone: item.timezone as string | null })),
     financials: (financials.get(row.id as string) ?? []).map((item) => ({ id: item.id as string, kind: item.financial_kind as TransactionFinancial["kind"], label: item.label as string, amount: Number(item.amount), currency: item.currency as string })),
     customFields: (customDefinitions.get(row.id as string) ?? []).map((item) => ({ id: item.id as string, key: item.field_key as string, label: item.label as string, dataType: item.data_type as TransactionCustomField["dataType"], required: item.required as boolean, stageGate: item.stage_gate as TransactionCustomField["stageGate"], validation: item.validation as Record<string, unknown>, ...(customValues.has(item.id as string) ? { value: customValues.get(item.id as string) } : {}) })),
-    documents: (documents.get(row.id as string) ?? []).filter((item) => item.document_version_id).map((item) => ({ id: item.document_id as string, name: item.name as string, requirementKey: item.requirement_key as string | null, required: item.required as boolean, stageGate: item.stage_gate as TransactionDocument["stageGate"], versionId: item.document_version_id as string, version: Number(item.version), fileName: item.file_name as string, uploadedAt: item.uploaded_at as string, expiresOn: item.expires_on as string | null, status: item.effective_status as TransactionDocument["status"], decisionReason: item.decision_reason as string | null })),
+    documents: (documents.get(row.id as string) ?? []).filter((item) => item.document_version_id).map((item) => {
+      const history = (documentHistory.get(item.document_id as string) ?? []).map((stored) => ({ id: stored.document_version_id as string, version: Number(stored.version), fileName: stored.file_name as string, uploadedAt: stored.uploaded_at as string, expiresOn: stored.expires_on as string | null, status: stored.effective_status as TransactionDocument["status"], decisionReason: stored.decision_reason as string | null, current: stored.is_current as boolean }));
+      return { id: item.document_id as string, name: item.name as string, requirementKey: item.requirement_key as string | null, required: item.required as boolean, stageGate: item.stage_gate as TransactionDocument["stageGate"], versionId: item.document_version_id as string, version: Number(item.version), fileName: item.file_name as string, uploadedAt: item.uploaded_at as string, expiresOn: item.expires_on as string | null, status: item.effective_status as TransactionDocument["status"], decisionReason: item.decision_reason as string | null, history: history.length > 0 ? history : [{ id: item.document_version_id as string, version: Number(item.version), fileName: item.file_name as string, uploadedAt: item.uploaded_at as string, expiresOn: item.expires_on as string | null, status: item.effective_status as TransactionDocument["status"], decisionReason: item.decision_reason as string | null, current: true }] };
+    }),
     pendingDocumentUploads: (pendingDocuments.get(row.id as string) ?? []).map((item) => ({ id: item.intent_id as string, ingestionEventId: item.ingestion_event_id as string, requirementKey: item.requirement_key as string | null, documentName: item.document_name as string, status: item.intent_status as TransactionPendingDocumentUpload["status"], safetyStatus: item.safety_status as TransactionPendingDocumentUpload["safetyStatus"], processingStatus: item.processing_status as TransactionPendingDocumentUpload["processingStatus"], failureReason: item.failure_reason as string | null, createdAt: item.created_at as string })),
+    invoices: (linkedInvoices.get(row.id as string) ?? []).map((item) => ({ id: item.invoice_candidate_id as string, version: Number(item.invoice_version ?? 0), vendor: item.vendor as string, invoiceNumber: item.invoice_number as string | null, currency: item.currency as string, total: item.total === null ? null : Number(item.total), dueDate: item.due_date as string | null, approvalStatus: item.approval_status as string, paymentStatus: item.payment_status as TransactionPaymentStatus, paidAmount: Number(item.paid_amount), outstandingAmount: Number(item.outstanding_amount), scheduledFor: item.scheduled_for as string | null, paymentNote: item.payment_note as string | null, contextReviewRequired: contextReviewInvoices.has(item.invoice_candidate_id as string) })),
+    issues: (issues.get(row.id as string) ?? []).map((item) => ({ id: item.issue_id as string, title: item.title as string, category: item.category as string, severity: item.severity as TransactionIssueSeverity, blocking: item.is_blocking as boolean, status: item.status as TransactionIssue["status"], ownerUserId: item.owner_user_id as string | null, dueDate: item.due_date as string | null, resolution: item.resolution as string | null, source: item.source as TransactionIssue["source"], createdAt: item.created_at as string, resolvedAt: item.resolved_at as string | null })),
     requirements: (row.transaction_requirement_statuses as Array<{ requirement_kind: "ARTIFACT" | "FIELD"; requirement_key: string; status: RequirementStatus; confidence: number | null; resolved_value: string | null; stage_gate: "BEFORE_REVIEW" | "BEFORE_APPROVAL" | "BEFORE_CLOSING"; requirement_source: "TEMPLATE" | "TRANSACTION"; template_mandated: boolean }>).map((item) => ({ kind: item.requirement_kind, key: item.requirement_key, status: item.status, confidence: item.confidence === null ? null : Number(item.confidence), ...(item.resolved_value ? { value: item.resolved_value } : {}), stageGate: item.stage_gate, source: item.requirement_source, templateMandated: item.template_mandated })),
   }));
 }
@@ -203,6 +231,14 @@ export async function linkInvoice(input: { invoiceId: string; invoiceVersion: nu
   await rpc("link_invoice_to_transaction", { target_invoice: input.invoiceId, expected_invoice_version: input.invoiceVersion,
     target_transaction: input.transactionId, expected_transaction_version: input.transactionVersion, actor: input.actorId });
 }
+export async function unlinkInvoice(input: { invoiceId: string; invoiceVersion: number; transactionVersion: number; reason: string; actorId: string }): Promise<void> {
+  await rpc("unlink_invoice_from_transaction", { target_invoice: input.invoiceId, expected_invoice_version: input.invoiceVersion,
+    expected_transaction_version: input.transactionVersion, target_reason: input.reason, actor: input.actorId });
+}
+export async function resolveInvoiceContextReview(input: { invoiceId: string; invoiceVersion: number; transactionVersion: number; resolution: string; actorId: string }): Promise<void> {
+  await rpc("resolve_invoice_transaction_context", { target_invoice: input.invoiceId, expected_invoice_version: input.invoiceVersion,
+    expected_transaction_version: input.transactionVersion, target_resolution: input.resolution, actor: input.actorId });
+}
 
 export async function updateTransactionRequirement(input: { transactionId: string; version: number; requirement: TransactionRequirement; status: RequirementStatus; actorId: string }): Promise<number> {
   return rpc<number>("record_transaction_requirement", { target_transaction: input.transactionId, expected_version: input.version,
@@ -233,6 +269,44 @@ export async function beginTransactionWork(input: { transactionId: string; versi
 
 export async function submitTransactionForReview(input: { transactionId: string; version: number; actorId: string }): Promise<TransactionStage> {
   return rpc<TransactionStage>("submit_transaction_for_review", { target_transaction: input.transactionId, expected_version: input.version, actor: input.actorId });
+}
+
+export async function completeTransactionReview(input: { transactionId: string; version: number; actorId: string }): Promise<TransactionStage> {
+  return rpc<TransactionStage>("complete_transaction_review", { target_transaction: input.transactionId, expected_version: input.version, actor: input.actorId });
+}
+
+export async function setTransactionInvoicePayment(input: { transactionId: string; version: number; invoiceId: string; status: TransactionPaymentStatus; paidAmount: number; scheduledFor?: string; note?: string; actorId: string }): Promise<number> {
+  return rpc<number>("set_transaction_invoice_payment", {
+    target_transaction: input.transactionId,
+    expected_version: input.version,
+    target_invoice: input.invoiceId,
+    target_status: input.status,
+    target_paid_amount: input.paidAmount,
+    target_scheduled_for: input.scheduledFor || null,
+    target_note: input.note || null,
+    actor: input.actorId,
+  });
+}
+
+export async function createTransactionIssue(input: { transactionId: string; version: number; title: string; category: string; severity: TransactionIssueSeverity; blocking: boolean; ownerUserId?: string; dueDate?: string; actorId: string }): Promise<string> {
+  return rpc<string>("create_transaction_issue", { target_transaction: input.transactionId, expected_version: input.version,
+    target_title: input.title, target_category: input.category, target_severity: input.severity,
+    target_blocking: input.blocking, target_owner: input.ownerUserId || null, target_due_date: input.dueDate || null, actor: input.actorId });
+}
+
+export async function resolveTransactionIssue(input: { issueId: string; version: number; resolution: string; actorId: string }): Promise<number> {
+  return rpc<number>("resolve_transaction_issue", { target_issue: input.issueId, expected_version: input.version,
+    target_resolution: input.resolution, actor: input.actorId });
+}
+
+export async function closeTransactionFile(input: { transactionId: string; version: number; actorId: string }): Promise<TransactionStage> {
+  return rpc<TransactionStage>("close_transaction_file", { target_transaction: input.transactionId, expected_version: input.version, actor: input.actorId });
+}
+export async function cancelTransactionFile(input: { transactionId: string; version: number; reason: string; actorId: string }): Promise<TransactionStage> {
+  return rpc<TransactionStage>("cancel_transaction_file", { target_transaction: input.transactionId, expected_version: input.version, target_reason: input.reason, actor: input.actorId });
+}
+export async function reopenTransactionFile(input: { transactionId: string; version: number; reason: string; actorId: string }): Promise<TransactionStage> {
+  return rpc<TransactionStage>("reopen_transaction_file", { target_transaction: input.transactionId, expected_version: input.version, target_reason: input.reason, actor: input.actorId });
 }
 
 export async function addTransactionParty(input: { transactionId: string; version: number; name: string; kind: TransactionParty["kind"]; role: TransactionPartyRole; primary: boolean; actorId: string }): Promise<string> {
@@ -319,5 +393,13 @@ function friendlyTransactionError(message: string): Error {
   if (message.includes("required information field not found")) return new Error("This information requirement no longer exists. Refresh and try again.");
   if (message.includes("explain why the document was rejected")) return new Error("Enter a reason so the uploader knows what to replace or correct.");
   if (message.includes("only the current document version")) return new Error("A newer version of this document is available. Refresh before reviewing it.");
+  if (message.includes("required item(s) before completing review")) return new Error("Resolve the required items before completing this review.");
+  if (message.includes("required information field(s) before completing review")) return new Error("Complete the required information before completing this review.");
+  if (message.includes("required document(s) before completing review")) return new Error("Verify every required document before completing this review.");
+  if (message.includes("conflict or confirmation task(s)")) return new Error("Resolve the outstanding conflicts and confirmations before completing this review.");
+  if (message.includes("scheduled payment date is required")) return new Error("Choose the date when this payment is scheduled.");
+  if (message.includes("partial payment must be")) return new Error("Enter an amount greater than zero and below the invoice total.");
+  if (message.includes("paid amount must equal")) return new Error("For a paid invoice, the paid amount must equal the invoice total.");
+  if (message.includes("reason is required for disputed or voided")) return new Error("Add a short reason for this payment status.");
   return new Error(message);
 }

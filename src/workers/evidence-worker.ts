@@ -15,6 +15,7 @@ export interface MalwareScanner { scan(content: Blob): Promise<ScanResult> }
 export interface EvidenceWorkerConfig {
   supabaseUrl: string;
   serviceRoleKey: string;
+  scannerMode: "remote" | "development";
   scannerUrl: string;
   scannerToken: string;
   batchSize: number;
@@ -47,15 +48,28 @@ function readPositiveInteger(name: string, value: string | undefined, fallback: 
 }
 
 export function loadEvidenceWorkerConfig(environment: NodeJS.ProcessEnv): EvidenceWorkerConfig {
-  const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "MALWARE_SCANNER_URL", "MALWARE_SCANNER_TOKEN"] as const;
+  const scannerMode = environment.EVIDENCE_SCANNER_MODE?.trim() || "remote";
+  if (!(["remote", "development"] as const).includes(scannerMode as "remote" | "development")) {
+    throw new Error("EVIDENCE_SCANNER_MODE must be remote or development");
+  }
+  if (scannerMode === "development" && environment.DEVELOPMENT_FILE_VALIDATION_ENABLED !== "true") {
+    throw new Error("Development file validation requires DEVELOPMENT_FILE_VALIDATION_ENABLED=true");
+  }
+  if (scannerMode === "development" && environment.NODE_ENV === "production") {
+    throw new Error("Development file validation is not allowed in production");
+  }
+  const required = scannerMode === "remote"
+    ? ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "MALWARE_SCANNER_URL", "MALWARE_SCANNER_TOKEN"] as const
+    : ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"] as const;
   const missing = required.filter((name) => !environment[name]?.trim());
   if (missing.length > 0) throw new Error(`Missing worker environment: ${missing.join(", ")}`);
 
   return {
     supabaseUrl: environment.SUPABASE_URL!.trim(),
     serviceRoleKey: environment.SUPABASE_SERVICE_ROLE_KEY!.trim(),
-    scannerUrl: environment.MALWARE_SCANNER_URL!.trim(),
-    scannerToken: environment.MALWARE_SCANNER_TOKEN!.trim(),
+    scannerMode: scannerMode as "remote" | "development",
+    scannerUrl: environment.MALWARE_SCANNER_URL?.trim() ?? "",
+    scannerToken: environment.MALWARE_SCANNER_TOKEN?.trim() ?? "",
     batchSize: readPositiveInteger("EVIDENCE_WORKER_BATCH_SIZE", environment.EVIDENCE_WORKER_BATCH_SIZE, 5, 25),
     idleDelayMs: readPositiveInteger("EVIDENCE_WORKER_IDLE_DELAY_MS", environment.EVIDENCE_WORKER_IDLE_DELAY_MS, 2_000, 300_000),
     errorDelayMs: readPositiveInteger("EVIDENCE_WORKER_ERROR_DELAY_MS", environment.EVIDENCE_WORKER_ERROR_DELAY_MS, 10_000, 300_000),
@@ -159,12 +173,32 @@ export class HttpMalwareScanner implements MalwareScanner {
   }
 }
 
+export class DevelopmentFileValidator implements MalwareScanner {
+  async scan(content: Blob): Promise<ScanResult> {
+    if (content.size === 0) return { safe: false, reason: "EMPTY_FILE" };
+    const bytes = new Uint8Array(await content.slice(0, 8).arrayBuffer());
+    const matchesPdf = bytes.length >= 5 && String.fromCharCode(...bytes.slice(0, 5)) === "%PDF-";
+    const matchesJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const matchesPng = bytes.length >= png.length && png.every((value, index) => bytes[index] === value);
+    return matchesPdf || matchesJpeg || matchesPng
+      ? { safe: true }
+      : { safe: false, reason: "FILE_SIGNATURE_MISMATCH" };
+  }
+}
+
+export function createEvidenceScanner(config: EvidenceWorkerConfig): MalwareScanner {
+  return config.scannerMode === "development"
+    ? new DevelopmentFileValidator()
+    : new HttpMalwareScanner(config.scannerUrl, config.scannerToken);
+}
+
 async function main() {
   if (existsSync(".env.worker.local")) loadEnvFile(".env.worker.local");
-  if (process.env.MALWARE_SCANNING_ENABLED !== "true") {
+  const config = loadEvidenceWorkerConfig(process.env);
+  if (config.scannerMode === "remote" && process.env.MALWARE_SCANNING_ENABLED !== "true") {
     throw new Error("Malware scanning is deferred. Set MALWARE_SCANNING_ENABLED=true only after configuring an approved scanner.");
   }
-  const config = loadEvidenceWorkerConfig(process.env);
   const workerId = `evidence-${process.pid}`;
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -173,7 +207,7 @@ async function main() {
 
   const backend = new SupabaseWorkerBackend(createClient(config.supabaseUrl, config.serviceRoleKey, { auth: { persistSession: false } }));
   console.log(`Evidence worker ${workerId} started`);
-  await runEvidenceWorker(backend, new HttpMalwareScanner(config.scannerUrl, config.scannerToken), workerId, {
+  await runEvidenceWorker(backend, createEvidenceScanner(config), workerId, {
     batchSize: config.batchSize,
     idleDelayMs: config.idleDelayMs,
     errorDelayMs: config.errorDelayMs,

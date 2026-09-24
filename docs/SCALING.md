@@ -41,6 +41,7 @@ This document records capacity and reliability work that is intentionally deferr
 - Production malware-scanner integration is deferred to Sprint 9 and must not block the current workflow-development phase.
 - The evidence worker and scanner interface are retained as dormant server-side foundation code; the browser does not invoke them.
 - The worker is disabled by default through `MALWARE_SCANNING_ENABLED=false`. It may only be enabled after an approved scanner is configured and end-to-end quarantine tests pass.
+- Local workflow testing may use the explicitly enabled signature validator through `npm run worker:evidence:dev`; it is not malware protection and is blocked in production.
 - Until then, uploaded evidence remains pending and must not be represented as safe, verified, or ready for extraction.
 - The intended implementation branch when Git is initialized is `feature/production-malware-scanner`.
 

@@ -28,8 +28,8 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApprovalPolicySettings } from "./ApprovalPolicySettings.js";
 import type { ApprovalMode, ApprovalPolicy } from "./infrastructure/supabase/approval-policies.js";
-import { TransactionWorkspace } from "./TransactionWorkspace.js";
-import type { RequirementStatus, TransactionActionItem, TransactionCustomField, TransactionDocument, TransactionFile, TransactionFinancial, TransactionImportantDate, TransactionLinkageProposal, TransactionOwnerOption, TransactionParty, TransactionPartyRole, TransactionRequirement, TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
+import { TransactionWorkspace, type Props as TransactionWorkspaceProps } from "./TransactionWorkspace.js";
+import type { RequirementStatus, TransactionActionItem, TransactionCustomField, TransactionDocument, TransactionFile, TransactionFinancial, TransactionImportantDate, TransactionInvoice, TransactionLinkageProposal, TransactionOwnerOption, TransactionParty, TransactionPartyRole, TransactionPaymentStatus, TransactionRequirement, TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
 
 type QueueStatus =
   | "Needs attention"
@@ -339,6 +339,7 @@ interface AppProps {
   onReactivateTransaction?: (transaction: TransactionFile) => Promise<void>;
   onBeginTransactionWork?: (transaction: TransactionFile) => Promise<void>;
   onSubmitTransactionReview?: (transaction: TransactionFile) => Promise<void>;
+  onCompleteTransactionReview?: (transaction: TransactionFile) => Promise<void>;
   onAddTransactionParty?: (transaction: TransactionFile, input: { name: string; kind: TransactionParty["kind"]; role: TransactionPartyRole; primary: boolean }) => Promise<void>;
   onSetTransactionDate?: (transaction: TransactionFile, input: { kind: TransactionImportantDate["kind"]; date: string }) => Promise<void>;
   onSetTransactionFinancial?: (transaction: TransactionFile, input: { kind: TransactionFinancial["kind"]; label: string; amount: number; currency: string }) => Promise<void>;
@@ -348,9 +349,17 @@ interface AppProps {
   onSetTransactionRequirementValue?: (transaction: TransactionFile, requirement: TransactionRequirement, value: string) => Promise<void>;
   onReviewTransactionDocument?: (transaction: TransactionFile, document: TransactionDocument, decision: "VERIFIED" | "REJECTED", reason?: string) => Promise<void>;
   onCancelTransactionDocumentUpload?: (transaction: TransactionFile, ingestionEventId: string) => Promise<void>;
+  onSetTransactionInvoicePayment?: (transaction: TransactionFile, invoice: TransactionInvoice, input: { status: TransactionPaymentStatus; paidAmount: number; scheduledFor?: string; note?: string }) => Promise<void>;
+  onUnlinkTransactionInvoice?: TransactionWorkspaceProps["onUnlinkInvoice"];
+  onReviewTransactionInvoiceContext?: TransactionWorkspaceProps["onReviewInvoiceContext"];
+  onCreateTransactionIssue?: TransactionWorkspaceProps["onCreateIssue"];
+  onResolveTransactionIssue?: TransactionWorkspaceProps["onResolveIssue"];
+  onCloseTransactionFile?: TransactionWorkspaceProps["onCloseFile"];
+  onCancelTransactionFile?: TransactionWorkspaceProps["onCancelFile"];
+  onReopenTransactionFile?: TransactionWorkspaceProps["onReopenFile"];
 }
 
-export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload }: AppProps = {}) {
+export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
   const [queue, setQueue] = useState(initialQueueItems);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");
   const [invoiceNumbers, setInvoiceNumbers] = useState<Record<string, string>>(
@@ -718,6 +727,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         onReactivate={onReactivateTransaction ?? (async () => undefined)}
         {...(onBeginTransactionWork ? { onBeginWork: onBeginTransactionWork } : {})}
         {...(onSubmitTransactionReview ? { onSubmitReview: onSubmitTransactionReview } : {})}
+        {...(onCompleteTransactionReview ? { onCompleteReview: onCompleteTransactionReview } : {})}
         {...(onAddTransactionParty ? { onAddParty: onAddTransactionParty } : {})}
         {...(onSetTransactionDate ? { onSetDate: onSetTransactionDate } : {})}
         {...(onSetTransactionFinancial ? { onSetFinancial: onSetTransactionFinancial } : {})}
@@ -726,7 +736,15 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         {...(onUploadTransactionDocument ? { onUploadDocument: onUploadTransactionDocument } : {})}
         {...(onSetTransactionRequirementValue ? { onSetRequirementValue: onSetTransactionRequirementValue } : {})}
         {...(onReviewTransactionDocument ? { onReviewDocument: onReviewTransactionDocument } : {})}
-        {...(onCancelTransactionDocumentUpload ? { onCancelDocumentUpload: onCancelTransactionDocumentUpload } : {})} /> : null}
+        {...(onCancelTransactionDocumentUpload ? { onCancelDocumentUpload: onCancelTransactionDocumentUpload } : {})}
+        {...(onSetTransactionInvoicePayment ? { onSetInvoicePayment: onSetTransactionInvoicePayment } : {})}
+        {...(onUnlinkTransactionInvoice ? { onUnlinkInvoice: onUnlinkTransactionInvoice } : {})}
+        {...(onReviewTransactionInvoiceContext ? { onReviewInvoiceContext: onReviewTransactionInvoiceContext } : {})}
+        {...(onCreateTransactionIssue ? { onCreateIssue: onCreateTransactionIssue } : {})}
+        {...(onResolveTransactionIssue ? { onResolveIssue: onResolveTransactionIssue } : {})}
+        {...(onCloseTransactionFile ? { onCloseFile: onCloseTransactionFile } : {})}
+        {...(onCancelTransactionFile ? { onCancelFile: onCancelTransactionFile } : {})}
+        {...(onReopenTransactionFile ? { onReopenFile: onReopenTransactionFile } : {})} /> : null}
 
       <section className={`queue-panel ${showQueue ? "queue-open" : ""}`}>
         <header className="queue-header">

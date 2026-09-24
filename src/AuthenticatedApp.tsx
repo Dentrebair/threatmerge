@@ -9,8 +9,9 @@ import { cancelIntakeScan, listIntakeReceipts, uploadEvidence, type IntakeQueueI
 import { loadWorkspaceSession, signIn, signOut, type WorkspaceSession } from "./infrastructure/supabase/session.js";
 import { getCurrentApprovalPolicy, publishApprovalPolicy, type ApprovalPolicy } from "./infrastructure/supabase/approval-policies.js";
 import { ApprovalPolicySettings } from "./ApprovalPolicySettings.js";
-import { addTransactionCustomField, addTransactionParty, addTransactionRequirement, approveTransaction, beginTransactionWork, createTransactionFile, evaluateConvergence, linkInvoice, listTransactionActionItems, listTransactionFiles, listTransactionLinkageProposals, listTransactionOwners, listTransactionTypes, reactivateTransaction, removeTransactionRequirement, resolveTransactionLinkageProposal, reviewTransactionDocument, setTransactionCustomFieldValue, setTransactionFinancial, setTransactionImportantDate, setTransactionRequirementValue, stageTransactionDocumentUpload, submitTransactionForReview, updateTransactionDetails, updateTransactionRequirement, type TransactionActionItem, type TransactionCustomField, type TransactionDocument, type TransactionFile, type TransactionFinancial, type TransactionImportantDate, type TransactionLinkageProposal, type TransactionOwnerOption, type TransactionParty, type TransactionPartyRole, type TransactionRequirement, type TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
+import { addTransactionCustomField, addTransactionParty, addTransactionRequirement, approveTransaction, beginTransactionWork, completeTransactionReview, createTransactionFile, evaluateConvergence, linkInvoice, listTransactionActionItems, listTransactionFiles, listTransactionLinkageProposals, listTransactionOwners, listTransactionTypes, reactivateTransaction, removeTransactionRequirement, resolveTransactionLinkageProposal, reviewTransactionDocument, setTransactionCustomFieldValue, setTransactionFinancial, setTransactionImportantDate, setTransactionInvoicePayment, setTransactionRequirementValue, stageTransactionDocumentUpload, submitTransactionForReview, updateTransactionDetails, updateTransactionRequirement, type TransactionActionItem, type TransactionCustomField, type TransactionDocument, type TransactionFile, type TransactionFinancial, type TransactionImportantDate, type TransactionInvoice, type TransactionLinkageProposal, type TransactionOwnerOption, type TransactionParty, type TransactionPartyRole, type TransactionPaymentStatus, type TransactionRequirement, type TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
 import { cancelTransactionDocumentUpload as cancelDocumentUpload } from "./infrastructure/supabase/transactions.js";
+import { cancelTransactionFile, closeTransactionFile, createTransactionIssue, reopenTransactionFile, resolveInvoiceContextReview, resolveTransactionIssue, unlinkInvoice, type TransactionIssue, type TransactionIssueSeverity } from "./infrastructure/supabase/transactions.js";
 import { TransactionWorkspace } from "./TransactionWorkspace.js";
 
 export function AuthenticatedApp() {
@@ -138,6 +139,10 @@ export function AuthenticatedApp() {
     const businessStage = await submitTransactionForReview({ transactionId: transaction.id, version: transaction.version, actorId: session!.user.id });
     patchTransaction(transaction.id, (item) => ({ ...item, version: item.version + 1, businessStage }));
   }
+  async function completeReview(transaction: TransactionFile) {
+    const businessStage = await completeTransactionReview({ transactionId: transaction.id, version: transaction.version, actorId: session!.user.id });
+    patchTransaction(transaction.id, (item) => ({ ...item, version: item.version + 1, businessStage }));
+  }
   function patchTransaction(transactionId: string, update: (transaction: TransactionFile) => TransactionFile) {
     setTransactions((current) => current.map((item) => item.id === transactionId ? update(item) : item));
   }
@@ -185,7 +190,7 @@ export function AuthenticatedApp() {
       await cancelIntakeScan({ tenantId: workspace!.tenantId, ingestionEventId: receipt.ingestionEventId, actorId: session!.user.id }).catch(() => undefined);
       throw reason;
     }
-    const nextReceipts = await listIntakeReceipts(workspace!.tenantId);
+    const [nextReceipts] = await Promise.all([listIntakeReceipts(workspace!.tenantId), reloadTransactions()]);
     setReceipts(nextReceipts);
   }
   async function cancelTransactionDocumentUpload(transaction: TransactionFile, ingestionEventId: string) {
@@ -205,6 +210,29 @@ export function AuthenticatedApp() {
     await reloadTransactions();
     setTransactionActions(await listTransactionActionItems(workspace!.tenantId));
   }
+  async function updateInvoicePayment(transaction: TransactionFile, invoice: TransactionInvoice, input: { status: TransactionPaymentStatus; paidAmount: number; scheduledFor?: string; note?: string }) {
+    await setTransactionInvoicePayment({ transactionId: transaction.id, version: transaction.version, invoiceId: invoice.id, actorId: session!.user.id, ...input });
+    await reloadTransactions();
+  }
+  async function unlinkTransactionInvoice(transaction: TransactionFile, invoice: TransactionInvoice, reason: string) {
+    await unlinkInvoice({ invoiceId: invoice.id, invoiceVersion: invoice.version, transactionVersion: transaction.version, reason, actorId: session!.user.id });
+    const [nextInvoices] = await Promise.all([listInvoices(), reloadTransactions()]); setInvoices(nextInvoices);
+  }
+  async function reviewTransactionInvoiceContext(transaction: TransactionFile, invoice: TransactionInvoice, resolution: string) {
+    await resolveInvoiceContextReview({ invoiceId: invoice.id, invoiceVersion: invoice.version, transactionVersion: transaction.version, resolution, actorId: session!.user.id });
+    await reloadTransactions();
+  }
+  async function addIssue(transaction: TransactionFile, input: { title: string; category: string; severity: TransactionIssueSeverity; blocking: boolean; ownerUserId?: string; dueDate?: string }) {
+    await createTransactionIssue({ transactionId: transaction.id, version: transaction.version, actorId: session!.user.id, ...input });
+    await reloadTransactions();
+  }
+  async function resolveIssue(transaction: TransactionFile, issue: TransactionIssue, resolution: string) {
+    await resolveTransactionIssue({ issueId: issue.id, version: transaction.version, resolution, actorId: session!.user.id });
+    await reloadTransactions();
+  }
+  async function closeFile(transaction: TransactionFile) { await closeTransactionFile({ transactionId: transaction.id, version: transaction.version, actorId: session!.user.id }); await reloadTransactions(); }
+  async function cancelFile(transaction: TransactionFile, reason: string) { await cancelTransactionFile({ transactionId: transaction.id, version: transaction.version, reason, actorId: session!.user.id }); await reloadTransactions(); }
+  async function reopenFile(transaction: TransactionFile, reason: string) { await reopenTransactionFile({ transactionId: transaction.id, version: transaction.version, reason, actorId: session!.user.id }); await reloadTransactions(); }
 
   if (!invoices?.length && receipts.length === 0 && transactions.length === 0 && transactionActions.length === 0) return <>{syncWarning ? <SyncWarning message={syncWarning} /> : null}<EmptyWorkspace workspaceName={workspace.tenantName} intakeMessage={intakeMessage} onUpload={upload} onSignOut={signOut} role={workspace.role} approvalPolicy={approvalPolicy} transactions={transactions} transactionTypes={transactionTypes} transactionOwners={transactionOwners} onCreateTransaction={createTransaction} onAddRequirement={addRequirement} onUpdateRequirement={changeRequirement} onEvaluateTransaction={convergeTransaction} onApproveTransaction={finalizeTransaction} onReactivateTransaction={restoreTransaction} onBeginWork={beginWork} onSubmitReview={submitForReview} onAddParty={addParty} onSetDate={setImportantDate} onSetFinancial={setFinancial} onAddCustomField={addCustomField} onSetCustomFieldValue={setCustomFieldValue} onUploadDocument={uploadTransactionDocument} onSetRequirementValue={saveRequirementValue} onPublish={async (mode, rules) => {
     const published = await publishApprovalPolicy({ tenantId: workspace.tenantId, mode, rules, actorId: session.user.id });
@@ -223,6 +251,7 @@ export function AuthenticatedApp() {
     onRemoveTransactionRequirement={removeRequirement}
     onBeginTransactionWork={beginWork}
     onSubmitTransactionReview={submitForReview}
+    onCompleteTransactionReview={completeReview}
     onAddTransactionParty={addParty}
     onSetTransactionDate={setImportantDate}
     onSetTransactionFinancial={setFinancial}
@@ -232,6 +261,14 @@ export function AuthenticatedApp() {
     onSetTransactionRequirementValue={saveRequirementValue}
     onReviewTransactionDocument={reviewDocument}
     onCancelTransactionDocumentUpload={cancelTransactionDocumentUpload}
+    onSetTransactionInvoicePayment={updateInvoicePayment}
+    onUnlinkTransactionInvoice={unlinkTransactionInvoice}
+    onReviewTransactionInvoiceContext={reviewTransactionInvoiceContext}
+    onCreateTransactionIssue={addIssue}
+    onResolveTransactionIssue={resolveIssue}
+    onCloseTransactionFile={closeFile}
+    onCancelTransactionFile={cancelFile}
+    {...(workspace.role === "TENANT_ADMIN" ? { onReopenTransactionFile: reopenFile } : {})}
     onLinkTransaction={async (transaction, invoice) => { await linkInvoice({ invoiceId: invoice.id, invoiceVersion: invoice.databaseVersion!, transactionId: transaction.id, transactionVersion: transaction.version, actorId: session.user.id }); const [nextInvoices] = await Promise.all([listInvoices(), reloadTransactions()]); setInvoices(nextInvoices); }}
     onResolveLinkageProposal={async (proposal, invoice, decision) => {
       await resolveTransactionLinkageProposal({ proposalId: proposal.id, invoiceVersion: invoice.databaseVersion!, transactionVersion: proposal.transactionVersion, decision, actorId: session.user.id });
