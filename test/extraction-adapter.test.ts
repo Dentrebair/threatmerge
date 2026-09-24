@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createExtractionAdapterHandler, loadExtractionAdapterConfig, type ExtractionEngine } from "../src/services/extraction-adapter.js";
+import { createExtractionAdapterHandler, GeminiExtractionEngine, loadExtractionAdapterConfig, type ExtractionEngine } from "../src/services/extraction-adapter.js";
 
 const result = { provider: "fixture", modelVersion: "v1", promptVersion: "v1", startedAt: "2026-09-24T08:00:00Z", observations: [] };
 const token = "adapter-secret";
@@ -44,7 +44,36 @@ describe("extraction adapter", () => {
   });
 
   it("requires complete Railway configuration", () => {
-    expect(() => loadExtractionAdapterConfig({})).toThrow("EXTRACTION_ENGINE_URL is required");
-    expect(loadExtractionAdapterConfig({ EXTRACTION_ADAPTER_TOKEN: token, EXTRACTION_ENGINE_URL: "https://engine.example/extract", EXTRACTION_ENGINE_TOKEN: "engine-secret", PORT: "8788" })).toMatchObject({ port: 8788, token });
+    expect(() => loadExtractionAdapterConfig({})).toThrow("EXTRACTION_ADAPTER_TOKEN is required");
+    expect(loadExtractionAdapterConfig({ EXTRACTION_ADAPTER_TOKEN: token, GEMINI_API_KEY: "gemini-secret", PORT: "8788" }))
+      .toMatchObject({ port: 8788, token, primaryModel: "gemini-3.1-flash-lite", fallbackModel: "gemini-3.5-flash" });
+  });
+
+  it("uses Flash Lite first when required fields are reliable", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ observations: [
+      { fieldName: "documentType", value: "INVOICE", page: 1, confidence: 0.99 },
+      { fieldName: "issuer", value: "Acme", page: 1, confidence: 0.91 },
+    ] }) }] } }] }), { status: 200 }));
+    const extracted = await new GeminiExtractionEngine("key", "gemini-3.1-flash-lite", "gemini-3.5-flash", 1_000)
+      .extract(new File(["pdf"], "invoice.pdf", { type: "application/pdf" }));
+    expect(extracted.modelVersion).toBe("gemini-3.1-flash-lite");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockRestore();
+  });
+
+  it("falls back to Flash when required fields are weak", async () => {
+    const weak = { observations: [{ fieldName: "documentType", value: "INVOICE", page: 1, confidence: 0.6 }] };
+    const strong = { observations: [
+      { fieldName: "documentType", value: "INVOICE", page: 1, confidence: 0.99 },
+      { fieldName: "issuer", value: "Acme", page: 1, confidence: 0.95 },
+    ] };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(weak) }] } }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(strong) }] } }] }), { status: 200 }));
+    const extracted = await new GeminiExtractionEngine("key", "gemini-3.1-flash-lite", "gemini-3.5-flash", 1_000)
+      .extract(new File(["pdf"], "invoice.pdf", { type: "application/pdf" }));
+    expect(extracted.modelVersion).toBe("gemini-3.5-flash");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    fetchMock.mockRestore();
   });
 });

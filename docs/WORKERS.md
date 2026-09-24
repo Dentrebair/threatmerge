@@ -66,6 +66,8 @@ Invalid provider responses fail the job without writing observations. Provider e
 
 ### Railway adapter deployment
 
-`railway-extraction.toml` defines a separate Railway service for the provider-neutral adapter. Configure the service to use that file, then set `EXTRACTION_ADAPTER_TOKEN`, `EXTRACTION_ENGINE_URL`, and `EXTRACTION_ENGINE_TOKEN` in Railway. The adapter exposes `/health` and authenticated `/extract` routes, accepts PDF/JPG/PNG files up to 5 MB, and returns a concise error when the extraction engine is unavailable.
+`railway-extraction.toml` defines a separate Railway service for the extraction adapter. Configure the service to use that file, then set `EXTRACTION_ADAPTER_TOKEN` and `GEMINI_API_KEY` in Railway. The adapter exposes `/health` and authenticated `/extract` routes, accepts PDF/JPG/PNG files up to 5 MB, and returns a concise error when Gemini is unavailable.
 
-After Railway deploys the service, set the worker's `DOCUMENT_EXTRACTOR_URL` to `https://<railway-domain>/extract` and set `DOCUMENT_EXTRACTOR_TOKEN` to the same value as Railway's `EXTRACTION_ADAPTER_TOKEN`. Railway supplies the domain; the selected OCR/model provider supplies the engine endpoint and credentials. Do not reuse the adapter token as the engine token.
+The adapter uses `gemini-3.1-flash-lite` first and retries difficult or invalid extraction with `gemini-3.5-flash`. Override these IDs with `GEMINI_PRIMARY_MODEL` and `GEMINI_FALLBACK_MODEL` only after verifying the replacement models in Google's model list.
+
+After Railway deploys the service, set the worker's `DOCUMENT_EXTRACTOR_URL` to `https://<railway-domain>/extract` and set `DOCUMENT_EXTRACTOR_TOKEN` to the same value as Railway's `EXTRACTION_ADAPTER_TOKEN`. Railway supplies the domain; Google AI Studio supplies the Gemini API key. Keep both secrets server-side.
