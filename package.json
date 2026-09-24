@@ -1,0 +1,40 @@
+{
+  "name": "threadmerge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:db": "vitest run test/database-foundation.test.ts",
+    "worker:evidence": "RUN_EVIDENCE_WORKER=true tsx src/workers/evidence-worker.ts",
+    "worker:extraction": "RUN_EXTRACTION_WORKER=true tsx src/workers/extraction-worker.ts",
+    "worker:assembly": "RUN_ASSEMBLY_WORKER=true tsx src/workers/assembly-worker.ts",
+    "worker:approval": "RUN_APPROVAL_WORKER=true tsx src/workers/approval-worker.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^29.1.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.0",
+    "lucide-react": "^1.47.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}
