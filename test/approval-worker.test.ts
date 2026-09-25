@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { processApprovalBatch, type ApprovalBackend } from "../src/workers/approval-worker.js";
+import { processApprovalBatch, runApprovalWorker, type ApprovalBackend } from "../src/workers/approval-worker.js";
 
 const job = { id: "job-1", lockToken: "lease-1" };
 function backend(): ApprovalBackend & { route: ReturnType<typeof vi.fn>; fail: ReturnType<typeof vi.fn> } {
@@ -18,5 +18,12 @@ describe("approval worker", () => {
     store.route.mockRejectedValue(new Error("policy unavailable"));
     await processApprovalBatch(store, "worker-1");
     expect(store.fail).toHaveBeenCalledWith(job, "APPROVAL_ROUTING_FAILED");
+  });
+  it("keeps polling after an idle batch", async () => {
+    const store = backend(); vi.mocked(store.claim).mockResolvedValue([]);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    await runApprovalWorker(store, "worker-1", { maxCycles: 2, sleep });
+    expect(store.claim).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000, undefined);
   });
 });

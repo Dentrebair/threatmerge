@@ -1,4 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { existsSync } from "node:fs";
+import { loadEnvFile } from "node:process";
+import { waitForExtractionWorker } from "./extraction-worker.js";
 
 export interface ApprovalJob { id: string; lockToken: string }
 export interface ApprovalBackend {
@@ -6,6 +9,7 @@ export interface ApprovalBackend {
   route(job: ApprovalJob): Promise<"PENDING_REVIEW" | "VERIFIED">;
   fail(job: ApprovalJob, code: string): Promise<void>;
 }
+export interface ApprovalWorkerOptions { signal?: AbortSignal; batchSize?: number; idleDelayMs?: number; errorDelayMs?: number; maxCycles?: number; sleep?: typeof waitForExtractionWorker; onCycle?: (result: { processed: number; error?: Error }) => void }
 
 export async function processApprovalBatch(backend: ApprovalBackend, workerId: string, limit = 5): Promise<number> {
   const jobs = await backend.claim(workerId, limit);
@@ -14,6 +18,16 @@ export async function processApprovalBatch(backend: ApprovalBackend, workerId: s
     catch { await backend.fail(job, "APPROVAL_ROUTING_FAILED"); }
   }));
   return jobs.length;
+}
+
+export async function runApprovalWorker(backend: ApprovalBackend, workerId: string, options: ApprovalWorkerOptions = {}): Promise<void> {
+  const sleep = options.sleep ?? waitForExtractionWorker;
+  for (let cycle = 0; !options.signal?.aborted && (options.maxCycles === undefined || cycle < options.maxCycles); cycle += 1) {
+    let delay = 0;
+    try { const processed = await processApprovalBatch(backend, workerId, options.batchSize ?? 5); options.onCycle?.({ processed }); if (!processed) delay = options.idleDelayMs ?? 2_000; }
+    catch (reason) { const error = reason instanceof Error ? reason : new Error(String(reason)); options.onCycle?.({ processed: 0, error }); delay = options.errorDelayMs ?? 10_000; }
+    if (!options.signal?.aborted && (options.maxCycles === undefined || cycle + 1 < options.maxCycles) && delay) await sleep(delay, options.signal);
+  }
 }
 
 export class SupabaseApprovalBackend implements ApprovalBackend {
@@ -35,12 +49,17 @@ export class SupabaseApprovalBackend implements ApprovalBackend {
 }
 
 async function main() {
+  if (existsSync(".env.worker.local")) loadEnvFile(".env.worker.local");
   const url = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !serviceKey) throw new Error("Approval worker environment is incomplete");
   const backend = new SupabaseApprovalBackend(createClient(url, serviceKey, { auth: { persistSession: false } }));
-  const processed = await processApprovalBatch(backend, `approval-${process.pid}`);
-  console.log(`Processed ${processed} approval routing jobs`);
+  const controller = new AbortController(); const stop = () => controller.abort();
+  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  const workerId = `approval-${process.pid}`; console.log(`Approval worker ${workerId} started`);
+  await runApprovalWorker(backend, workerId, { signal: controller.signal,
+    onCycle: ({ processed, error }) => { if (error) console.error(`Approval worker cycle failed: ${error.message}`); else if (processed) console.log(`Processed ${processed} approval routing job${processed === 1 ? "" : "s"}`); } });
+  process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Approval worker ${workerId} stopped`);
 }
 
 if (process.env.RUN_APPROVAL_WORKER === "true") void main().catch((error: unknown) => { console.error(error); process.exitCode = 1; });

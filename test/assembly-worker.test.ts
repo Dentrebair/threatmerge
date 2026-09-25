@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { processAssemblyBatch, type AssemblyBackend, type AssemblyJob } from "../src/workers/assembly-worker.js";
+import { processAssemblyBatch, runAssemblyWorker, type AssemblyBackend, type AssemblyJob } from "../src/workers/assembly-worker.js";
 
 const job: AssemblyJob = { id: "job-1", lockToken: "lease-1" };
 
@@ -27,5 +27,12 @@ describe("assembly worker", () => {
     store.complete.mockRejectedValue(new Error("database unavailable"));
     await processAssemblyBatch(store, "worker-1");
     expect(store.fail).toHaveBeenCalledWith(job, "INVOICE_ASSEMBLY_FAILED");
+  });
+
+  it("keeps polling after an idle batch", async () => {
+    const store = backend([]); const sleep = vi.fn().mockResolvedValue(undefined);
+    await runAssemblyWorker(store, "worker-1", { maxCycles: 2, sleep });
+    expect(store.claim).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000, undefined);
   });
 });

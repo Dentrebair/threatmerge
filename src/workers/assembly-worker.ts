@@ -1,4 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { existsSync } from "node:fs";
+import { loadEnvFile } from "node:process";
+import { waitForExtractionWorker } from "./extraction-worker.js";
 
 export interface AssemblyJob { id: string; lockToken: string }
 export interface AssemblyBackend {
@@ -6,6 +9,7 @@ export interface AssemblyBackend {
   complete(job: AssemblyJob): Promise<string | null>;
   fail(job: AssemblyJob, code: string): Promise<void>;
 }
+export interface AssemblyWorkerOptions { signal?: AbortSignal; batchSize?: number; idleDelayMs?: number; errorDelayMs?: number; maxCycles?: number; sleep?: typeof waitForExtractionWorker; onCycle?: (result: { processed: number; error?: Error }) => void }
 
 export async function processAssemblyBatch(backend: AssemblyBackend, workerId: string, limit = 5): Promise<number> {
   const jobs = await backend.claim(workerId, limit);
@@ -17,6 +21,16 @@ export async function processAssemblyBatch(backend: AssemblyBackend, workerId: s
     }
   }));
   return jobs.length;
+}
+
+export async function runAssemblyWorker(backend: AssemblyBackend, workerId: string, options: AssemblyWorkerOptions = {}): Promise<void> {
+  const sleep = options.sleep ?? waitForExtractionWorker;
+  for (let cycle = 0; !options.signal?.aborted && (options.maxCycles === undefined || cycle < options.maxCycles); cycle += 1) {
+    let delay = 0;
+    try { const processed = await processAssemblyBatch(backend, workerId, options.batchSize ?? 5); options.onCycle?.({ processed }); if (!processed) delay = options.idleDelayMs ?? 2_000; }
+    catch (reason) { const error = reason instanceof Error ? reason : new Error(String(reason)); options.onCycle?.({ processed: 0, error }); delay = options.errorDelayMs ?? 10_000; }
+    if (!options.signal?.aborted && (options.maxCycles === undefined || cycle + 1 < options.maxCycles) && delay) await sleep(delay, options.signal);
+  }
 }
 
 export class SupabaseAssemblyBackend implements AssemblyBackend {
@@ -41,12 +55,17 @@ export class SupabaseAssemblyBackend implements AssemblyBackend {
 }
 
 async function main() {
+  if (existsSync(".env.worker.local")) loadEnvFile(".env.worker.local");
   const url = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !serviceKey) throw new Error("Assembly worker environment is incomplete");
   const backend = new SupabaseAssemblyBackend(createClient(url, serviceKey, { auth: { persistSession: false } }));
-  const processed = await processAssemblyBatch(backend, `assembly-${process.pid}`);
-  console.log(`Processed ${processed} invoice assembly jobs`);
+  const controller = new AbortController(); const stop = () => controller.abort();
+  process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  const workerId = `assembly-${process.pid}`; console.log(`Assembly worker ${workerId} started`);
+  await runAssemblyWorker(backend, workerId, { signal: controller.signal,
+    onCycle: ({ processed, error }) => { if (error) console.error(`Assembly worker cycle failed: ${error.message}`); else if (processed) console.log(`Processed ${processed} invoice assembly job${processed === 1 ? "" : "s"}`); } });
+  process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Assembly worker ${workerId} stopped`);
 }
 
 if (process.env.RUN_ASSEMBLY_WORKER === "true") void main().catch((error: unknown) => { console.error(error); process.exitCode = 1; });
