@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DevelopmentFileValidator,
+  createEvidenceScanner,
   loadEvidenceWorkerConfig,
   processEvidenceBatch,
   runEvidenceWorker,
@@ -73,5 +75,34 @@ describe("evidence worker", () => {
       MALWARE_SCANNER_TOKEN: "scanner-token",
       EVIDENCE_WORKER_BATCH_SIZE: "0",
     })).toThrow("EVIDENCE_WORKER_BATCH_SIZE");
+  });
+
+  it("allows explicit local validation without remote scanner credentials", () => {
+    const config = loadEvidenceWorkerConfig({
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "server-only",
+      EVIDENCE_SCANNER_MODE: "development",
+      DEVELOPMENT_FILE_VALIDATION_ENABLED: "true",
+      NODE_ENV: "development",
+    });
+    expect(config.scannerMode).toBe("development");
+    expect(createEvidenceScanner(config)).toBeInstanceOf(DevelopmentFileValidator);
+  });
+
+  it("refuses development validation in production", () => {
+    expect(() => loadEvidenceWorkerConfig({
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "server-only",
+      EVIDENCE_SCANNER_MODE: "development",
+      DEVELOPMENT_FILE_VALIDATION_ENABLED: "true",
+      NODE_ENV: "production",
+    })).toThrow("not allowed in production");
+  });
+
+  it("accepts supported file signatures and rejects disguised files in development", async () => {
+    const scanner = new DevelopmentFileValidator();
+    await expect(scanner.scan(new Blob(["%PDF-1.7\ncontent"], { type: "application/pdf" }))).resolves.toEqual({ safe: true });
+    await expect(scanner.scan(new Blob(["not a pdf"], { type: "application/pdf" }))).resolves.toEqual({ safe: false, reason: "FILE_SIGNATURE_MISMATCH" });
+    await expect(scanner.scan(new Blob([], { type: "application/pdf" }))).resolves.toEqual({ safe: false, reason: "EMPTY_FILE" });
   });
 });

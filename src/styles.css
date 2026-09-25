@@ -305,6 +305,10 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
 .transaction-detail { min-width: 0; min-height: 0; overflow-y: auto; padding: 28px clamp(20px, 4vw, 54px); background: #fff; }
 .transaction-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
 .transaction-summary-actions { display: flex; align-items: center; gap: 8px; }
+.transaction-file-menu { position: relative; }
+.transaction-file-menu-popover { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 8px 24px rgba(31, 41, 38, .14); }
+.transaction-file-menu-popover button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px; border: 0; background: transparent; color: var(--danger); text-align: left; cursor: pointer; }
+.transaction-file-menu-popover button:hover { background: var(--coral-soft); }
 .transaction-edit-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
 .transaction-edit-details label { display: grid; gap: 5px; color: #53605b; font-size: 10px; font-weight: 700; }
 .transaction-edit-details input { min-width: 0; height: 34px; border: 1px solid #cbd3cf; border-radius: 5px; padding: 0 8px; background: #fff; }
@@ -361,6 +365,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
 .documents-section h3 { margin: 0; font-size: 14px; }
 .documents-section header p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
 .document-list { margin-top: 11px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.document-record + .document-record { border-top: 1px solid var(--line); }
 .document-row { min-height: 66px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; padding: 10px 12px; }
 .document-row + .document-row { border-top: 1px solid var(--line); }
 .document-status { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #edf2ef; color: var(--muted); }
@@ -371,6 +376,12 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
 .document-row span, .document-row small, .document-empty { color: var(--muted); font-size: 9px; }
 .document-state { padding: 4px 7px; border-radius: 4px; background: #edf2ef; font-weight: 800; text-transform: uppercase; }
 .document-actions { display: flex; gap: 6px; }
+.document-history { border-top: 1px solid var(--line); background: #f7f9f8; padding: 4px 12px 8px 55px; }
+.document-history-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 150px; gap: 14px; align-items: center; padding: 8px 0; }
+.document-history-row + .document-history-row { border-top: 1px solid var(--line); }
+.document-history-row > div { display: grid; gap: 2px; }
+.document-history-row strong { font-size: 10px; }
+.document-history-row span, .document-history-row small { color: var(--muted); font-size: 9px; }
 .document-empty { margin: 0; padding: 15px; }
 .requirements-section > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .requirements-section h3 { margin: 0; font-size: 14px; }
@@ -421,6 +432,29 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
 .fact-list span, .fact-list > p { margin: 0; color: var(--muted); font-size: 9px; }
 .fact-list > p { padding: 14px 12px; }
 .custom-fields-section { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+.transaction-invoices { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+.transaction-invoices > header h3 { margin: 0; font-size: 14px; }
+.transaction-invoices > header p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+.transaction-invoice-list { margin-top: 11px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.transaction-invoice-row { display: grid; grid-template-columns: minmax(160px, 1.4fr) 100px 120px 110px 150px auto; align-items: center; gap: 12px; min-height: 70px; padding: 10px 12px; }
+.transaction-invoice-row + .transaction-invoice-row { border-top: 1px solid var(--line); }
+.transaction-invoice-row > div { min-width: 0; display: grid; gap: 3px; }
+.transaction-invoice-row strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.transaction-invoice-row span, .transaction-invoice-row small, .transaction-invoice-row em { color: var(--muted); font-size: 9px; font-style: normal; }
+.transaction-invoice-row .document-state { width: max-content; color: #52615b; }
+.transaction-invoice-row .payment-paid { background: var(--green-soft); color: var(--green); }
+.transaction-invoice-row .payment-disputed, .transaction-invoice-row .payment-voided { background: var(--coral-soft); color: #9c3d30; }
+.invoice-row-actions { display: flex !important; align-items: center; justify-content: flex-end; gap: 6px; }
+.transaction-issues { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
+.transaction-issues > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.transaction-issues h3, .transaction-issues p { margin: 0; }
+.transaction-issue-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.transaction-issue-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px; }
+.transaction-issue-row + .transaction-issue-row { border-top: 1px solid var(--line); }
+.transaction-issue-row.blocking > svg { color: var(--danger); }
+.transaction-issue-row.resolved > svg { color: var(--green); }
+.transaction-issue-row > div { display: grid; gap: 3px; }
+.transaction-issue-row span, .transaction-issue-row small { color: var(--muted); font-size: 9px; }
 .custom-fields-section > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .custom-fields-section h3 { margin: 0; font-size: 14px; }
 .custom-fields-section header p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
@@ -495,6 +529,12 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
   .requirement-location { grid-column: 2; text-align: left; }
   .document-row { grid-template-columns: 32px minmax(0, 1fr); }
   .document-state, .document-actions { grid-column: 2; }
+  .document-history { padding-left: 12px; }
+  .document-history-row { grid-template-columns: 1fr; gap: 5px; }
+  .transaction-invoice-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .transaction-invoice-row > button { grid-column: 1 / -1; width: 100%; }
+  .transaction-issue-row { grid-template-columns: 22px minmax(0, 1fr); }
+  .transaction-issue-row > .document-state, .transaction-issue-row > button { grid-column: 2; justify-self: start; }
   .source-panel { position: absolute; inset: 0; z-index: 5; border: 0; }
   .source-toggle { display: grid; }
   .form-panel { grid-column: 1; }

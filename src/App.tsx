@@ -28,8 +28,8 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApprovalPolicySettings } from "./ApprovalPolicySettings.js";
 import type { ApprovalMode, ApprovalPolicy } from "./infrastructure/supabase/approval-policies.js";
-import { TransactionWorkspace } from "./TransactionWorkspace.js";
-import type { RequirementStatus, TransactionActionItem, TransactionCustomField, TransactionDocument, TransactionFile, TransactionFinancial, TransactionImportantDate, TransactionLinkageProposal, TransactionOwnerOption, TransactionParty, TransactionPartyRole, TransactionRequirement, TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
+import { TransactionWorkspace, type Props as TransactionWorkspaceProps } from "./TransactionWorkspace.js";
+import type { RequirementStatus, TransactionActionItem, TransactionCustomField, TransactionDocument, TransactionFile, TransactionFinancial, TransactionImportantDate, TransactionInvoice, TransactionLinkageProposal, TransactionOwnerOption, TransactionParty, TransactionPartyRole, TransactionPaymentStatus, TransactionRequirement, TransactionTypeOption } from "./infrastructure/supabase/transactions.js";
 
 type QueueStatus =
   | "Needs attention"
@@ -339,6 +339,7 @@ interface AppProps {
   onReactivateTransaction?: (transaction: TransactionFile) => Promise<void>;
   onBeginTransactionWork?: (transaction: TransactionFile) => Promise<void>;
   onSubmitTransactionReview?: (transaction: TransactionFile) => Promise<void>;
+  onCompleteTransactionReview?: (transaction: TransactionFile) => Promise<void>;
   onAddTransactionParty?: (transaction: TransactionFile, input: { name: string; kind: TransactionParty["kind"]; role: TransactionPartyRole; primary: boolean }) => Promise<void>;
   onSetTransactionDate?: (transaction: TransactionFile, input: { kind: TransactionImportantDate["kind"]; date: string }) => Promise<void>;
   onSetTransactionFinancial?: (transaction: TransactionFile, input: { kind: TransactionFinancial["kind"]; label: string; amount: number; currency: string }) => Promise<void>;
@@ -348,9 +349,17 @@ interface AppProps {
   onSetTransactionRequirementValue?: (transaction: TransactionFile, requirement: TransactionRequirement, value: string) => Promise<void>;
   onReviewTransactionDocument?: (transaction: TransactionFile, document: TransactionDocument, decision: "VERIFIED" | "REJECTED", reason?: string) => Promise<void>;
   onCancelTransactionDocumentUpload?: (transaction: TransactionFile, ingestionEventId: string) => Promise<void>;
+  onSetTransactionInvoicePayment?: (transaction: TransactionFile, invoice: TransactionInvoice, input: { status: TransactionPaymentStatus; paidAmount: number; scheduledFor?: string; note?: string }) => Promise<void>;
+  onUnlinkTransactionInvoice?: TransactionWorkspaceProps["onUnlinkInvoice"];
+  onReviewTransactionInvoiceContext?: TransactionWorkspaceProps["onReviewInvoiceContext"];
+  onCreateTransactionIssue?: TransactionWorkspaceProps["onCreateIssue"];
+  onResolveTransactionIssue?: TransactionWorkspaceProps["onResolveIssue"];
+  onCloseTransactionFile?: TransactionWorkspaceProps["onCloseFile"];
+  onCancelTransactionFile?: TransactionWorkspaceProps["onCancelFile"];
+  onReopenTransactionFile?: TransactionWorkspaceProps["onReopenFile"];
 }
 
-export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload }: AppProps = {}) {
+export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
   const [queue, setQueue] = useState(initialQueueItems);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");
   const [invoiceNumbers, setInvoiceNumbers] = useState<Record<string, string>>(
@@ -718,6 +727,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         onReactivate={onReactivateTransaction ?? (async () => undefined)}
         {...(onBeginTransactionWork ? { onBeginWork: onBeginTransactionWork } : {})}
         {...(onSubmitTransactionReview ? { onSubmitReview: onSubmitTransactionReview } : {})}
+        {...(onCompleteTransactionReview ? { onCompleteReview: onCompleteTransactionReview } : {})}
         {...(onAddTransactionParty ? { onAddParty: onAddTransactionParty } : {})}
         {...(onSetTransactionDate ? { onSetDate: onSetTransactionDate } : {})}
         {...(onSetTransactionFinancial ? { onSetFinancial: onSetTransactionFinancial } : {})}
@@ -726,7 +736,15 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         {...(onUploadTransactionDocument ? { onUploadDocument: onUploadTransactionDocument } : {})}
         {...(onSetTransactionRequirementValue ? { onSetRequirementValue: onSetTransactionRequirementValue } : {})}
         {...(onReviewTransactionDocument ? { onReviewDocument: onReviewTransactionDocument } : {})}
-        {...(onCancelTransactionDocumentUpload ? { onCancelDocumentUpload: onCancelTransactionDocumentUpload } : {})} /> : null}
+        {...(onCancelTransactionDocumentUpload ? { onCancelDocumentUpload: onCancelTransactionDocumentUpload } : {})}
+        {...(onSetTransactionInvoicePayment ? { onSetInvoicePayment: onSetTransactionInvoicePayment } : {})}
+        {...(onUnlinkTransactionInvoice ? { onUnlinkInvoice: onUnlinkTransactionInvoice } : {})}
+        {...(onReviewTransactionInvoiceContext ? { onReviewInvoiceContext: onReviewTransactionInvoiceContext } : {})}
+        {...(onCreateTransactionIssue ? { onCreateIssue: onCreateTransactionIssue } : {})}
+        {...(onResolveTransactionIssue ? { onResolveIssue: onResolveTransactionIssue } : {})}
+        {...(onCloseTransactionFile ? { onCloseFile: onCloseTransactionFile } : {})}
+        {...(onCancelTransactionFile ? { onCancelFile: onCancelTransactionFile } : {})}
+        {...(onReopenTransactionFile ? { onReopenFile: onReopenTransactionFile } : {})} /> : null}
 
       <section className={`queue-panel ${showQueue ? "queue-open" : ""}`}>
         <header className="queue-header">
@@ -1045,17 +1063,17 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             </div>
             {selected?.status === "Processing" ? (
               <div className="state-overlay">
-                <div className={`state-symbol processing-symbol ${selected.intakeStage === "QUEUED_FOR_SCAN" ? "queued-symbol" : ""}`}>{selected.intakeStage === "QUEUED_FOR_SCAN" ? <FileSearch size={24} /> : <RefreshCw size={24} />}</div>
-                <h3>{selected.intakeStage === "EXTRACTING" ? "Reading invoice details" : selected.intakeStage === "ASSEMBLING" ? "Preparing invoice for review" : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Processing is taking longer than usual" : "Waiting to process your invoice" : selected.intakeStage ? "Checking file safety" : "Reading invoice details"}</h3>
-                <p>{selected.intakeStage === "EXTRACTING" || selected.intakeStage === "ASSEMBLING" ? "You can leave this page. We will continue processing and add the invoice to your review queue when it is ready." : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Your file is safely uploaded. You can leave this page and check back later. If it remains here, contact your workspace administrator." : "Your file is safely uploaded and next in line. This usually starts within a minute, and you do not need to keep this page open." : selected.intakeStage ? "We are checking the uploaded file before reading its invoice details." : "You can leave this page while we prepare the invoice for review."}</p>
+                <div className={`state-symbol processing-symbol ${selected.intakeStage === "QUEUED_FOR_SCAN" ? "queued-symbol" : ""}`}>{selected.intakeStage === "PROCESSING_FAILED" ? <AlertTriangle size={24} /> : selected.intakeStage === "QUEUED_FOR_SCAN" ? <FileSearch size={24} /> : <RefreshCw size={24} />}</div>
+                <h3>{selected.intakeStage === "PROCESSING_FAILED" ? "Invoice details could not be read" : selected.intakeStage === "EXTRACTING" ? "Reading invoice details" : selected.intakeStage === "ASSEMBLING" ? "Preparing invoice for review" : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Processing is taking longer than usual" : "Waiting to process your invoice" : selected.intakeStage ? "Checking file safety" : "Reading invoice details"}</h3>
+                <p>{selected.intakeStage === "PROCESSING_FAILED" ? "The file passed its safety check, but invoice extraction failed after retrying. Upload the invoice again or contact your workspace administrator." : selected.intakeStage === "EXTRACTING" || selected.intakeStage === "ASSEMBLING" ? "You can leave this page. We will continue processing and add the invoice to your review queue when it is ready." : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Your file is safely uploaded. You can leave this page and check back later. If it remains here, contact your workspace administrator." : "Your file is safely uploaded and next in line. This usually starts within a minute, and you do not need to keep this page open." : selected.intakeStage ? "We are checking the uploaded file before reading its invoice details." : "You can leave this page while we prepare the invoice for review."}</p>
                 {scanQueueStalled ? <div className="processing-warning" role="status"><Info size={16} /><span>Only cancel if you uploaded the wrong file or no longer need it processed.</span></div> : null}
                 <ol className="stage-list">
                   <li className="done"><Check size={14} /> Upload complete</li>
                   <li className={selected.intakeStage === "QUEUED_FOR_SCAN" ? "queued" : selected.intakeStage === "SCANNING" ? "active" : "done"}>{selected.intakeStage === "QUEUED_FOR_SCAN" ? <FileSearch size={14} /> : selected.intakeStage === "SCANNING" ? <RefreshCw size={14} /> : <Check size={14} />} {selected.intakeStage === "QUEUED_FOR_SCAN" ? "Waiting to check file" : selected.intakeStage === "SCANNING" ? "Checking file safety" : "File safety confirmed"}</li>
-                  <li className={selected.intakeStage === "EXTRACTING" || !selected.intakeStage ? "active" : selected.intakeStage === "ASSEMBLING" ? "done" : ""}>{selected.intakeStage === "EXTRACTING" || !selected.intakeStage ? <RefreshCw size={14} /> : selected.intakeStage === "ASSEMBLING" ? <Check size={14} /> : null} Reading invoice details</li>
+                  <li className={selected.intakeStage === "PROCESSING_FAILED" ? "" : selected.intakeStage === "EXTRACTING" || !selected.intakeStage ? "active" : selected.intakeStage === "ASSEMBLING" ? "done" : ""}>{selected.intakeStage === "PROCESSING_FAILED" ? <AlertTriangle size={14} /> : selected.intakeStage === "EXTRACTING" || !selected.intakeStage ? <RefreshCw size={14} /> : selected.intakeStage === "ASSEMBLING" ? <Check size={14} /> : null} {selected.intakeStage === "PROCESSING_FAILED" ? "Invoice extraction failed" : "Reading invoice details"}</li>
                   <li className={selected.intakeStage === "ASSEMBLING" ? "active" : ""}>{selected.intakeStage === "ASSEMBLING" ? <RefreshCw size={14} /> : null} Preparing for review</li>
                 </ol>
-                {selected.intakeStage && onCancelIntake ? <button className="secondary-button finish-processing" type="button" disabled={commandPending} onClick={() => void cancelScan()}>{commandPending ? "Cancelling..." : "Cancel upload"}</button> : null}
+                {selected.intakeStage && selected.intakeStage !== "PROCESSING_FAILED" && onCancelIntake ? <button className="secondary-button finish-processing" type="button" disabled={commandPending} onClick={() => void cancelScan()}>{commandPending ? "Cancelling..." : "Cancel upload"}</button> : null}
                 {!selected.intakeStage ? <button className="secondary-button finish-processing" type="button" onClick={completeProcessing}>Complete extraction</button> : null}
               </div>
             ) : null}

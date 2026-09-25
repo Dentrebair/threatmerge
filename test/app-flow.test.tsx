@@ -253,6 +253,14 @@ describe("Sprint 1 review flow", () => {
     expect(screen.getByText(/Only cancel if you uploaded the wrong file/)).toBeVisible();
   });
 
+  it("shows extraction failure after safety succeeds without offering scan cancellation", () => {
+    const receipt: QueueItem = { id: "intake-failed", issuer: "invoice.png", reference: "Manual upload", amount: "—", age: "Today", status: "Processing", origin: "Captured", linked: false, description: "Recognition failed", assignedToMe: true, intakeStage: "PROCESSING_FAILED" };
+    render(<App initialQueueItems={[receipt]} initialInvoiceDrafts={{ [receipt.id]: { invoiceNumber: "", date: "", issuer: "invoice.png", billTo: "", currency: "USD", description: "", quantity: "1", rate: "0" } }} onCancelIntake={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Invoice details could not be read" })).toBeVisible();
+    expect(screen.getByText("Invoice extraction failed")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Cancel upload" })).not.toBeInTheDocument();
+  });
+
   it("cancels a persisted intake scan through its command callback", async () => {
     const user = userEvent.setup();
     const cancel = vi.fn().mockResolvedValue(undefined);
