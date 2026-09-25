@@ -162,7 +162,7 @@ async function main() {
   const workerId = `extraction-${process.pid}`; console.log(`Extraction worker ${workerId} started`);
   await runExtractionWorker(backend, new HttpDocumentExtractor(config.extractorUrl, config.extractorToken, config.requestTimeoutMs), workerId,
     { batchSize: config.batchSize, idleDelayMs: config.idleDelayMs, errorDelayMs: config.errorDelayMs, signal: controller.signal,
-      onCycle: ({ processed, error }) => { if (error) console.error(`Extraction worker cycle failed: ${error.message}`); else if (processed) console.log(`Processed ${processed} extraction job${processed === 1 ? "" : "s"}`); } });
+      onCycle: ({ processed, error }) => { if (error) console.error(`Extraction worker cycle failed: ${error.message}`); else if (processed) console.log(`Claimed ${processed} extraction job${processed === 1 ? "" : "s"}`); } });
   process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Extraction worker ${workerId} stopped`);
 }
 

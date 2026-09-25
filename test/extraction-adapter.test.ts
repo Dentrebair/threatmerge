@@ -58,6 +58,11 @@ describe("extraction adapter", () => {
       .extract(new File(["pdf"], "invoice.pdf", { type: "application/pdf" }));
     expect(extracted.modelVersion).toBe("gemini-3.1-flash-lite");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(request.body as string) as { generationConfig: Record<string, unknown> };
+    expect(body.generationConfig).toMatchObject({ responseMimeType: "application/json" });
+    expect(body.generationConfig).toHaveProperty("responseJsonSchema");
+    expect(body.generationConfig).not.toHaveProperty("responseFormat");
     fetchMock.mockRestore();
   });
 
