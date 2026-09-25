@@ -61,7 +61,8 @@ describe("extraction adapter", () => {
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(request.body as string) as { generationConfig: Record<string, unknown> };
     expect(body.generationConfig).toMatchObject({ responseMimeType: "application/json" });
-    expect(body.generationConfig).toHaveProperty("responseJsonSchema");
+    expect(body.generationConfig).toHaveProperty("responseSchema");
+    expect(body.generationConfig).not.toHaveProperty("responseJsonSchema");
     expect(body.generationConfig).not.toHaveProperty("responseFormat");
     fetchMock.mockRestore();
   });
