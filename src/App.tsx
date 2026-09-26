@@ -967,8 +967,11 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                 <div className="blocker-banner" role="alert">
                   <AlertTriangle size={18} />
                   <div>
-                    <strong>Approval unavailable</strong>
-                    <span>Processing must finish before this invoice can be approved.</span>
+                    <strong>Upload needs to be processed again</strong>
+                    <span>This invoice was not fully processed. Upload it again to continue.</span>
+                    <button className="blocker-action" type="button" disabled={commandPending} onClick={() => fileInput.current?.click()}>
+                      <Upload size={14} /> Upload again
+                    </button>
                   </div>
                 </div>
               ) : (

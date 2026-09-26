@@ -56,7 +56,8 @@ describe("Sprint 1 review flow", () => {
     render(<App initialQueueItems={[incomplete]} />);
 
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Approval unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Upload needs to be processed again");
+    expect(screen.getByRole("button", { name: "Upload again" })).toBeEnabled();
     expect(screen.queryByText("Validation passed")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Re-run extraction" })).not.toBeInTheDocument();
   });

@@ -188,6 +188,9 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px 
 .ready-banner { background: var(--green-soft); border: 1px solid #bfdfd0; color: #185c48; }
 .blocker-banner > div, .ready-banner > div { display: grid; gap: 2px; font-size: 12px; }
 .blocker-banner span, .ready-banner span { color: #615c59; }
+.blocker-action { width: max-content; margin-top: 8px; border: 1px solid #9c3d30; border-radius: 6px; min-height: 34px; padding: 0 12px; background: #fff; color: #8d352a; font: inherit; font-weight: 750; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.blocker-action:hover { background: #fff7f5; }
+.blocker-action:disabled { cursor: wait; opacity: .55; }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
 .section-heading h3, .compact-heading { margin: 0 0 4px; font-size: 14px; letter-spacing: 0; }
 .compact-heading { margin-bottom: 13px; }
