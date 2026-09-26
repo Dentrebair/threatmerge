@@ -151,6 +151,27 @@ describe("database foundation", () => {
     await expect(db.exec(`delete from verified_invoice_records where invoice_candidate_id = '${ids.invoiceA}'`)).rejects.toThrow(/append-only/);
   });
 
+  it("timestamps invoice field creation and every correction", async () => {
+    await db.exec(`
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, schema_fingerprint)
+        values ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'schema');
+      insert into invoice_field_values
+        (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method, created_at, updated_at)
+      values
+        ('${ids.tenantA}', '${ids.invoiceA}', 'invoiceNumber', '"INV-1"', 'EXTRACTED',
+          '2000-01-01 00:00:00+00', '2000-01-01 00:00:00+00');
+      update invoice_field_values
+        set resolved_value = '"INV-2"', created_at = '2010-01-01 00:00:00+00'
+        where invoice_candidate_id = '${ids.invoiceA}' and field_name = 'invoiceNumber';
+    `);
+    const timestamps = await db.query<{ created_at: Date; updated_at: Date }>(`
+      select created_at, updated_at from invoice_field_values
+      where invoice_candidate_id = '${ids.invoiceA}' and field_name = 'invoiceNumber'
+    `);
+    expect(new Date(timestamps.rows[0]!.created_at).toISOString()).toBe("2000-01-01T00:00:00.000Z");
+    expect(new Date(timestamps.rows[0]!.updated_at).getTime()).toBeGreaterThan(new Date("2000-01-01T00:00:00Z").getTime());
+  });
+
   it("prevents editing terminal invoices", async () => {
     await db.exec(`insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, source_invoice_number, schema_fingerprint, total) values ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'VERIFIED', 'SRC-1', 'schema', 10)`);
     await authenticate(db, ids.userA);
