@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { App } from "./App.js";
 import type { InvoiceDraft, QueueItem } from "./App.js";
 import { isSupabaseConfigured, supabase } from "./infrastructure/supabase/client.js";
-import { listInvoices, saveInvoiceField, verifyInvoice, type PersistedInvoice } from "./infrastructure/supabase/invoices.js";
+import { listInvoices, reprocessInvoice, saveInvoiceField, verifyInvoice, type PersistedInvoice } from "./infrastructure/supabase/invoices.js";
 import { cancelIntakeScan, listIntakeReceipts, uploadEvidence, type IntakeQueueItem } from "./infrastructure/supabase/manual-intake.js";
 import { loadWorkspaceSession, signIn, signOut, type WorkspaceSession } from "./infrastructure/supabase/session.js";
 import { getCurrentApprovalPolicy, publishApprovalPolicy, type ApprovalPolicy } from "./infrastructure/supabase/approval-policies.js";
@@ -243,6 +243,12 @@ export function AuthenticatedApp() {
   return <>{syncWarning ? <SyncWarning message={syncWarning} /> : null}<App key={items.map((item) => `${item.id}:${item.status}:${item.databaseVersion ?? 0}`).join("|")} workspaceName={workspace.tenantName} userEmail={session.user.email ?? "Signed-in user"} initialQueueItems={items} initialInvoiceDrafts={drafts} workspaceRole={workspace.role} approvalPolicy={approvalPolicy} transactions={transactions} transactionActions={transactionActions.map((item) => ({ ...item, assignedToMe: item.assignedTo === session.user.id }))} linkageProposals={linkageProposals} transactionTypes={transactionTypes} transactionOwners={transactionOwners}
     onPersistField={(input) => saveInvoiceField({ ...input, actorId: session.user.id })}
     onVerify={(input) => verifyInvoice({ ...input, actorId: session.user.id })}
+    onReprocess={async (input) => {
+      await reprocessInvoice({ ...input, actorId: session.user.id });
+      const [nextInvoices, nextReceipts] = await Promise.all([listInvoices(), listIntakeReceipts(workspace.tenantId)]);
+      setInvoices(nextInvoices);
+      setReceipts(nextReceipts);
+    }}
     onUpload={upload}
     onCancelIntake={cancelScan}
     onCreateTransaction={createTransaction}
@@ -297,7 +303,9 @@ export function AuthenticatedApp() {
 }
 
 function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]): { items: QueueItem[]; drafts: Record<string, InvoiceDraft> } {
-  const items: QueueItem[] = invoices.map((invoice) => ({
+  const items: QueueItem[] = invoices.map((invoice) => {
+    const lineItem = firstExtractedLineItem(invoice.fields);
+    return {
     id: invoice.id,
     issuer: invoice.issuer,
     reference: invoice.linkageStatus === "LINKED" ? "Linked Transaction File" : "Standalone invoice",
@@ -308,10 +316,11 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     linked: invoice.linkageStatus === "LINKED",
     ...(invoice.transactionFileId ? { linkedTransactionId: invoice.transactionFileId } : {}),
     invoiceNumber: invoice.origin === "Generated" ? invoice.officialInvoiceNumber : invoice.sourceInvoiceNumber,
-    description: String(invoice.fields.description ?? "Invoice service"),
+    description: lineItem.description,
     assignedToMe: true,
     databaseVersion: invoice.version,
-  }));
+    };
+  });
   for (const receipt of receipts) items.push({
     id: `intake-${receipt.ingestionEventId}`,
     issuer: receipt.fileName,
@@ -328,18 +337,32 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     ingestionEventId: receipt.ingestionEventId,
     intakeReceivedAt: receipt.receivedAt,
   });
-  const drafts: Record<string, InvoiceDraft> = Object.fromEntries(invoices.map((invoice) => [invoice.id, {
+  const drafts: Record<string, InvoiceDraft> = Object.fromEntries(invoices.map((invoice) => {
+    const lineItem = firstExtractedLineItem(invoice.fields);
+    return [invoice.id, {
     invoiceNumber: invoice.origin === "Generated" ? invoice.officialInvoiceNumber : invoice.sourceInvoiceNumber,
-    date: String(invoice.fields.date ?? ""),
+    date: String(invoice.fields.invoiceDate ?? invoice.fields.date ?? ""),
     issuer: invoice.issuer,
     billTo: String(invoice.fields.billTo ?? ""),
     currency: invoice.currency,
-    description: String(invoice.fields.description ?? ""),
-    quantity: String(invoice.fields.quantity ?? "1"),
-    rate: String(invoice.fields.rate ?? invoice.total ?? "0"),
-  }]));
+    description: lineItem.description,
+    quantity: lineItem.quantity,
+    rate: lineItem.unitPrice,
+    }];
+  }));
   for (const receipt of receipts) drafts[`intake-${receipt.ingestionEventId}`] = { invoiceNumber: "", date: "", issuer: receipt.fileName, billTo: "", currency: "USD", description: "", quantity: "1", rate: "0" };
   return { items, drafts };
+}
+
+function firstExtractedLineItem(fields: Record<string, unknown>): { description: string; quantity: string; unitPrice: string } {
+  const first = Array.isArray(fields.lineItems) ? fields.lineItems[0] : null;
+  if (typeof first !== "object" || first === null || Array.isArray(first)) return { description: "", quantity: "", unitPrice: "" };
+  const item = first as Record<string, unknown>;
+  return {
+    description: typeof item.description === "string" ? item.description : "",
+    quantity: typeof item.quantity === "string" || typeof item.quantity === "number" ? String(item.quantity) : "",
+    unitPrice: typeof item.unitPrice === "string" || typeof item.unitPrice === "number" ? String(item.unitPrice) : "",
+  };
 }
 
 function invalidateReviewStage(stage: TransactionFile["businessStage"]): TransactionFile["businessStage"] {

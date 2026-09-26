@@ -21,6 +21,7 @@ export async function listInvoices(): Promise<PersistedInvoice[]> {
   const { data, error } = await supabase
     .from("invoice_candidates")
     .select("id, origin, lifecycle, linkage_status, transaction_file_id, source_invoice_number, official_invoice_number, currency, total, version, updated_at, issuers!inner(legal_name), invoice_field_values(field_name,resolved_value)")
+    .neq("lifecycle", "DISMISSED")
     .order("updated_at", { ascending: false });
   if (error) throw new Error(`Unable to load invoices: ${error.message}`);
   return data.map((row) => ({
@@ -38,6 +39,16 @@ export async function listInvoices(): Promise<PersistedInvoice[]> {
     updatedAt: row.updated_at as string,
     fields: Object.fromEntries((row.invoice_field_values as Array<{ field_name: string; resolved_value: unknown }>).map((field) => [field.field_name, field.resolved_value])),
   }));
+}
+
+export async function reprocessInvoice(input: { invoiceId: string; expectedVersion: number; actorId: string }): Promise<void> {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { error } = await supabase.rpc("request_invoice_reprocessing", {
+    target_invoice: input.invoiceId,
+    expected_version: input.expectedVersion,
+    actor: input.actorId,
+  });
+  if (error) throw commandError(error.message);
 }
 
 export async function saveInvoiceField(input: {

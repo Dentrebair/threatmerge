@@ -317,6 +317,7 @@ interface AppProps {
   initialInvoiceDrafts?: Record<string, InvoiceDraft>;
   onPersistField?: (input: { invoiceId: string; expectedVersion: number; field: keyof InvoiceDraft; value: string }) => Promise<number>;
   onVerify?: (input: { invoiceId: string; expectedVersion: number; origin: "Captured" | "Generated" }) => Promise<string>;
+  onReprocess?: (input: { invoiceId: string; expectedVersion: number }) => Promise<void>;
   onUpload?: (file: File) => Promise<void>;
   onCancelIntake?: (ingestionEventId: string) => Promise<void>;
   workspaceRole?: "TENANT_ADMIN" | "REVIEWER" | "VIEWER" | "INTEGRATION";
@@ -359,7 +360,7 @@ interface AppProps {
   onReopenTransactionFile?: TransactionWorkspaceProps["onReopenFile"];
 }
 
-export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
+export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onReprocess, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
   const [queue, setQueue] = useState(initialQueueItems);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");
   const [invoiceNumbers, setInvoiceNumbers] = useState<Record<string, string>>(
@@ -597,6 +598,20 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     setToast(selected.origin === "Generated" ? `Invoice ${officialNumber} verified; PDF compilation queued` : "Invoice verified and audit event recorded");
     window.setTimeout(() => setToast(null), 3200);
     setCommandPending(false);
+  }
+
+  async function reprocessSelectedInvoice() {
+    if (!selected || selected.databaseVersion === undefined || !onReprocess) return;
+    setCommandPending(true);
+    setCommandError(null);
+    try {
+      await onReprocess({ invoiceId: selected.id, expectedVersion: selected.databaseVersion });
+      notify("Invoice queued for processing");
+    } catch (reason) {
+      setCommandError(reason instanceof Error ? reason.message : "Unable to process this invoice again");
+    } finally {
+      setCommandPending(false);
+    }
   }
 
   async function handleUpload(file: File | undefined) {
@@ -969,8 +984,8 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <div>
                     <strong>Upload needs to be processed again</strong>
                     <span>This invoice was not fully processed. Upload it again to continue.</span>
-                    <button className="blocker-action" type="button" disabled={commandPending} onClick={() => fileInput.current?.click()}>
-                      <Upload size={14} /> Upload again
+                    <button className="blocker-action" type="button" disabled={commandPending || !onReprocess} onClick={() => void reprocessSelectedInvoice()}>
+                      <RefreshCw size={14} /> {commandPending ? "Queuing..." : "Process again"}
                     </button>
                   </div>
                 </div>

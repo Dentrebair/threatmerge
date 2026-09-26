@@ -53,6 +53,7 @@ describe("extraction adapter", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ observations: [
       { fieldName: "documentType", value: "INVOICE", page: 1, confidence: 0.99 },
       { fieldName: "issuer", value: "Acme", page: 1, confidence: 0.91 },
+      { fieldName: "lineItems", value: [{ description: "Inspection", quantity: "1", unitPrice: "100", amount: "100" }], page: 1, confidence: 0.96 },
     ] }) }] } }] }), { status: 200 }));
     const extracted = await new GeminiExtractionEngine("key", "gemini-3.1-flash-lite", "gemini-3.5-flash", 1_000)
       .extract(new File(["pdf"], "invoice.pdf", { type: "application/pdf" }));
@@ -72,6 +73,7 @@ describe("extraction adapter", () => {
     const strong = { observations: [
       { fieldName: "documentType", value: "INVOICE", page: 1, confidence: 0.99 },
       { fieldName: "issuer", value: "Acme", page: 1, confidence: 0.95 },
+      { fieldName: "lineItems", value: [{ description: "Inspection", quantity: "1", unitPrice: "100", amount: "100" }], page: 1, confidence: 0.96 },
     ] };
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(weak) }] } }] }), { status: 200 }))
