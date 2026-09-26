@@ -58,6 +58,7 @@ describe("Sprint 1 review flow", () => {
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("Approval unavailable");
     expect(screen.queryByText("Validation passed")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-run extraction" })).not.toBeInTheDocument();
   });
 
   it("filters the work queue and toggles source evidence", async () => {

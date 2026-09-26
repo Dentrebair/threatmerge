@@ -946,7 +946,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             </section>
           ) : <section className="form-panel">
             <div className="form-scroll">
-              {commandError ? <div className="blocker-banner" role="alert"><AlertTriangle size={18} /><div><strong>Action failed</strong><span>{commandError}</span></div></div> : null}
+              {commandError && !isPersistedIncomplete ? <div className="blocker-banner" role="alert"><AlertTriangle size={18} /><div><strong>Action failed</strong><span>{commandError}</span></div></div> : null}
               {selected?.status === "Verified" ? (
                 <div className="ready-banner">
                   <CheckCircle2 size={18} />
@@ -986,9 +986,11 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <h3>Invoice details</h3>
                   <p>Default schema · v1 · {selected?.origin} invoice</p>
                 </div>
-                <button className="text-button" type="button" disabled={selected?.status === "Verified"} onClick={rerunExtraction}>
-                  <RefreshCw size={14} /> Re-run extraction
-                </button>
+                {selected?.databaseVersion === undefined ? (
+                  <button className="text-button" type="button" disabled={selected?.status === "Verified"} onClick={rerunExtraction}>
+                    <RefreshCw size={14} /> Re-run extraction
+                  </button>
+                ) : null}
               </div>
 
               <div className="field-grid">
