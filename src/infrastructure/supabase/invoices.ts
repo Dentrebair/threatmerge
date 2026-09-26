@@ -14,17 +14,28 @@ export interface PersistedInvoice {
   version: number;
   updatedAt: string;
   fields: Record<string, unknown>;
+  sourceUrl: string | null;
+  sourceMediaType: string | null;
 }
 
 export async function listInvoices(): Promise<PersistedInvoice[]> {
   if (!supabase) throw new Error("Supabase is not configured");
-  const { data, error } = await supabase
+  const client = supabase;
+  const { data, error } = await client
     .from("invoice_candidates")
-    .select("id, origin, lifecycle, linkage_status, transaction_file_id, source_invoice_number, official_invoice_number, currency, total, version, updated_at, issuers!inner(legal_name), invoice_field_values(field_name,resolved_value)")
+    .select("id, origin, lifecycle, linkage_status, transaction_file_id, source_invoice_number, official_invoice_number, currency, total, version, updated_at, issuers!inner(legal_name), invoice_field_values(field_name,resolved_value), evidence_links(relationship,evidence_artifacts(storage_path,media_type))")
     .neq("lifecycle", "DISMISSED")
     .order("updated_at", { ascending: false });
   if (error) throw new Error(`Unable to load invoices: ${error.message}`);
-  return data.map((row) => ({
+  return Promise.all(data.map(async (row) => {
+    const links = row.evidence_links as unknown as Array<{ relationship: string; evidence_artifacts: { storage_path: string; media_type: string } | null }>;
+    const source = links.find((link) => link.relationship === "SOURCE_DOCUMENT")?.evidence_artifacts ?? null;
+    let sourceUrl: string | null = null;
+    if (source) {
+      const { data: signed } = await client.storage.from("evidence").createSignedUrl(source.storage_path, 3600);
+      sourceUrl = signed?.signedUrl ?? null;
+    }
+    return {
     id: row.id as string,
     issuer: (row.issuers as unknown as { legal_name: string }).legal_name,
     origin: row.origin === "GENERATED" ? "Generated" : "Captured",
@@ -38,6 +49,9 @@ export async function listInvoices(): Promise<PersistedInvoice[]> {
     version: row.version as number,
     updatedAt: row.updated_at as string,
     fields: Object.fromEntries((row.invoice_field_values as Array<{ field_name: string; resolved_value: unknown }>).map((field) => [field.field_name, field.resolved_value])),
+    sourceUrl,
+    sourceMediaType: source?.media_type ?? null,
+    };
   }));
 }
 

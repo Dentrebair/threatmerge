@@ -319,6 +319,8 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     description: lineItem.description,
     assignedToMe: true,
     databaseVersion: invoice.version,
+    ...(invoice.sourceUrl ? { sourceUrl: invoice.sourceUrl } : {}),
+    ...(invoice.sourceMediaType ? { sourceMediaType: invoice.sourceMediaType } : {}),
     };
   });
   for (const receipt of receipts) items.push({

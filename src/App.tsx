@@ -57,6 +57,8 @@ export interface QueueItem {
   intakeStage?: "QUEUED_FOR_SCAN" | "SCANNING" | "EXTRACTING" | "ASSEMBLING" | "QUARANTINED" | "PROCESSING_FAILED";
   ingestionEventId?: string;
   intakeReceivedAt?: string;
+  sourceUrl?: string;
+  sourceMediaType?: string;
 }
 
 export interface InvoiceDraft {
@@ -220,6 +222,18 @@ function SourceDocument({
   highlight: string | null;
   item: QueueItem;
 }) {
+  if (item.sourceUrl) {
+    const highlighted = highlight ? " actual-source-highlight" : "";
+    return (
+      <div className={`actual-source-wrap${highlighted}`} aria-label="Source invoice preview">
+        {item.sourceMediaType === "application/pdf" ? (
+          <iframe className="actual-source-pdf" src={item.sourceUrl} title="Uploaded invoice" />
+        ) : (
+          <img className="actual-source-image" src={item.sourceUrl} alt="Uploaded invoice" />
+        )}
+      </div>
+    );
+  }
   const initials = item.issuer
     .split(" ")
     .slice(0, 2)
