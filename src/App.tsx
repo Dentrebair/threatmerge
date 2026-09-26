@@ -464,7 +464,10 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
       && `${transaction?.propertyAddress ?? ""} ${transaction?.externalReference ?? ""} ${item.requirementKey}`.toLowerCase().includes(query.toLowerCase());
   }), [activeFilter, query, transactionActions, transactions]);
   const hasBlocker = selected?.origin === "Captured" && invoiceNumber.trim() === "";
-  const canApprove = selected?.status !== "Processing" && selected?.status !== "Quarantined" && !hasBlocker;
+  const isPersistedIncomplete = selected?.databaseVersion !== undefined && selected.status === "Needs attention";
+  const canApprove = selected?.databaseVersion !== undefined
+    ? selected.status === "Ready to review" && !hasBlocker
+    : selected?.status !== "Processing" && selected?.status !== "Quarantined" && !hasBlocker;
   const scanQueueStalled = selected?.intakeStage === "QUEUED_FOR_SCAN" && selected.intakeReceivedAt !== undefined
     && clock - new Date(selected.intakeReceivedAt).getTime() >= 60000;
 
@@ -958,6 +961,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <div>
                     <strong>1 blocker before approval</strong>
                     <span>Enter the missing invoice number.</span>
+                  </div>
+                </div>
+              ) : isPersistedIncomplete ? (
+                <div className="blocker-banner" role="alert">
+                  <AlertTriangle size={18} />
+                  <div>
+                    <strong>Approval unavailable</strong>
+                    <span>Processing must finish before this invoice can be approved.</span>
                   </div>
                 </div>
               ) : (

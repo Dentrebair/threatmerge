@@ -78,6 +78,9 @@ export async function verifyInvoice(input: {
 
 function commandError(message: string): Error {
   if (message.includes("stale invoice version")) return new Error("This invoice changed in another session. Refresh before continuing.");
+  if (message.includes("not eligible for captured verification") || message.includes("not eligible for generated finalization")) {
+    return new Error("This invoice is not ready for approval. Refresh and confirm processing is complete.");
+  }
   if (message.includes("role cannot")) return new Error("Your role cannot perform this invoice action.");
   return new Error(message);
 }

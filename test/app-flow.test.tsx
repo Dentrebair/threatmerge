@@ -37,6 +37,29 @@ describe("Sprint 1 review flow", () => {
     ).toBeVisible();
   });
 
+  it("does not offer approval for an incomplete persisted invoice", () => {
+    const incomplete: QueueItem = {
+      id: "invoice-incomplete",
+      issuer: "Lotus Blossom Spa",
+      reference: "Standalone invoice",
+      amount: "$138.00",
+      age: "Today",
+      status: "Needs attention",
+      origin: "Captured",
+      linked: false,
+      invoiceNumber: "2025-100034",
+      description: "Invoice service",
+      assignedToMe: true,
+      databaseVersion: 1,
+    };
+
+    render(<App initialQueueItems={[incomplete]} />);
+
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Approval unavailable");
+    expect(screen.queryByText("Validation passed")).not.toBeInTheDocument();
+  });
+
   it("filters the work queue and toggles source evidence", async () => {
     const user = userEvent.setup();
     render(<App />);
