@@ -59,6 +59,9 @@ export interface QueueItem {
   intakeReceivedAt?: string;
   sourceUrl?: string;
   sourceMediaType?: string;
+  lineItems?: Array<{ description: string; quantity: string; unitPrice: string; amount: string }>;
+  subtotalAmount?: string;
+  taxAmount?: string;
 }
 
 export interface InvoiceDraft {
@@ -461,6 +464,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     style: "currency",
     currency: draft?.currency || "USD",
   }).format(Number.isFinite(total) ? total : 0);
+  const displayedTotal = selected?.databaseVersion !== undefined ? selected.amount : formattedTotal;
   const filteredQueue = useMemo(
     () =>
       queue.filter(
@@ -1070,7 +1074,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
               <div className="section-heading line-heading">
                 <div>
                   <h3>Line items</h3>
-                  <p>1 extracted row</p>
+                  <p>{selected?.lineItems?.length ?? 1} extracted {selected?.lineItems?.length === 1 ? "row" : "rows"}</p>
                 </div>
                 <button className="text-button" type="button" onClick={() => inspectSource("line")}>
                   <FileSearch size={14} /> Inspect source
@@ -1080,18 +1084,24 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                 <div className="line-table-head">
                   <span>Description</span><span>Qty</span><span>Rate</span><span>Amount</span>
                 </div>
-                <div className="line-row">
-                  <input aria-label="Line item description" value={draft?.description ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("description", event.target.value)} onBlur={() => void commitField("description")} />
-                  <input aria-label="Quantity" type="number" min="0" value={draft?.quantity ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("quantity", event.target.value)} onBlur={() => void commitField("quantity")} />
-                  <input aria-label="Rate" type="number" min="0" step="0.01" value={draft?.rate ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("rate", event.target.value)} onBlur={() => void commitField("rate")} />
-                  <strong>{formattedTotal}</strong>
-                </div>
+                {selected?.lineItems?.length ? selected.lineItems.map((line, index) => (
+                  <div className="line-row" key={`${line.description}:${index}`}>
+                    <span>{line.description}</span><span>{line.quantity}</span><span>{line.unitPrice}</span><strong>{line.amount}</strong>
+                  </div>
+                )) : (
+                  <div className="line-row">
+                    <input aria-label="Line item description" value={draft?.description ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("description", event.target.value)} onBlur={() => void commitField("description")} />
+                    <input aria-label="Quantity" type="number" min="0" value={draft?.quantity ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("quantity", event.target.value)} onBlur={() => void commitField("quantity")} />
+                    <input aria-label="Rate" type="number" min="0" step="0.01" value={draft?.rate ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("rate", event.target.value)} onBlur={() => void commitField("rate")} />
+                    <strong>{formattedTotal}</strong>
+                  </div>
+                )}
               </div>
 
               <div className="totals">
-                <div><span>Subtotal</span><span>{formattedTotal}</span></div>
-                <div><span>Tax</span><span>$0.00</span></div>
-                <div className="total-row"><strong>Total</strong><strong>{formattedTotal}</strong></div>
+                <div><span>Subtotal</span><span>{selected?.subtotalAmount ?? displayedTotal}</span></div>
+                <div><span>Tax</span><span>{selected?.taxAmount ?? "$0.00"}</span></div>
+                <div className="total-row"><strong>Total</strong><strong>{displayedTotal}</strong></div>
               </div>
 
               <details className="provenance">

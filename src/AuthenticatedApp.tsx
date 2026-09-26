@@ -304,7 +304,8 @@ export function AuthenticatedApp() {
 
 function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]): { items: QueueItem[]; drafts: Record<string, InvoiceDraft> } {
   const items: QueueItem[] = invoices.map((invoice) => {
-    const lineItem = firstExtractedLineItem(invoice.fields);
+    const lineItems = extractedLineItems(invoice.fields);
+    const lineItem = lineItems[0] ?? { description: "", quantity: "", unitPrice: "", amount: "" };
     return {
     id: invoice.id,
     issuer: invoice.issuer,
@@ -321,6 +322,9 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     databaseVersion: invoice.version,
     ...(invoice.sourceUrl ? { sourceUrl: invoice.sourceUrl } : {}),
     ...(invoice.sourceMediaType ? { sourceMediaType: invoice.sourceMediaType } : {}),
+    ...(lineItems.length ? { lineItems } : {}),
+    subtotalAmount: formatInvoiceAmount(invoice.fields.subtotal, invoice.currency),
+    taxAmount: formatInvoiceAmount(invoice.fields.tax ?? 0, invoice.currency),
     };
   });
   for (const receipt of receipts) items.push({
@@ -340,7 +344,7 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     intakeReceivedAt: receipt.receivedAt,
   });
   const drafts: Record<string, InvoiceDraft> = Object.fromEntries(invoices.map((invoice) => {
-    const lineItem = firstExtractedLineItem(invoice.fields);
+    const lineItem = extractedLineItems(invoice.fields)[0] ?? { description: "", quantity: "", unitPrice: "", amount: "" };
     return [invoice.id, {
     invoiceNumber: invoice.origin === "Generated" ? invoice.officialInvoiceNumber : invoice.sourceInvoiceNumber,
     date: String(invoice.fields.invoiceDate ?? invoice.fields.date ?? ""),
@@ -356,15 +360,23 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
   return { items, drafts };
 }
 
-function firstExtractedLineItem(fields: Record<string, unknown>): { description: string; quantity: string; unitPrice: string } {
-  const first = Array.isArray(fields.lineItems) ? fields.lineItems[0] : null;
-  if (typeof first !== "object" || first === null || Array.isArray(first)) return { description: "", quantity: "", unitPrice: "" };
-  const item = first as Record<string, unknown>;
-  return {
-    description: typeof item.description === "string" ? item.description : "",
-    quantity: typeof item.quantity === "string" || typeof item.quantity === "number" ? String(item.quantity) : "",
-    unitPrice: typeof item.unitPrice === "string" || typeof item.unitPrice === "number" ? String(item.unitPrice) : "",
-  };
+function extractedLineItems(fields: Record<string, unknown>): Array<{ description: string; quantity: string; unitPrice: string; amount: string }> {
+  if (!Array.isArray(fields.lineItems)) return [];
+  return fields.lineItems.flatMap((value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+    const item = value as Record<string, unknown>;
+    return [{
+      description: typeof item.description === "string" ? item.description : "",
+      quantity: typeof item.quantity === "string" || typeof item.quantity === "number" ? String(item.quantity) : "",
+      unitPrice: typeof item.unitPrice === "string" || typeof item.unitPrice === "number" ? String(item.unitPrice) : "",
+      amount: typeof item.amount === "string" || typeof item.amount === "number" ? String(item.amount) : "",
+    }];
+  });
+}
+
+function formatInvoiceAmount(value: unknown, currency: string): string {
+  const amount = typeof value === "number" || typeof value === "string" ? Number(value) : 0;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(Number.isFinite(amount) ? amount : 0);
 }
 
 function invalidateReviewStage(stage: TransactionFile["businessStage"]): TransactionFile["businessStage"] {

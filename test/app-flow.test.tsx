@@ -62,6 +62,37 @@ describe("Sprint 1 review flow", () => {
     expect(screen.queryByRole("button", { name: "Re-run extraction" })).not.toBeInTheDocument();
   });
 
+  it("renders every persisted line item without replacing the invoice total", () => {
+    const invoice: QueueItem = {
+      id: "invoice-lines",
+      issuer: "Lotus Blossom Spa",
+      reference: "Standalone invoice",
+      amount: "$138.00",
+      age: "Today",
+      status: "Ready to review",
+      origin: "Captured",
+      linked: false,
+      invoiceNumber: "2025-100034",
+      description: "Color Explosion Bottle",
+      assignedToMe: true,
+      databaseVersion: 2,
+      lineItems: [
+        { description: "Color Explosion Bottle", quantity: "1", unitPrice: "28.00", amount: "28.00" },
+        { description: "Salt Rub Massage", quantity: "1", unitPrice: "110.00", amount: "110.00" },
+      ],
+      subtotalAmount: "$138.00",
+      taxAmount: "$0.00",
+    };
+
+    render(<App initialQueueItems={[invoice]} />);
+
+    expect(screen.getByText("2 extracted rows")).toBeVisible();
+    expect(screen.getAllByText("Color Explosion Bottle").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Salt Rub Massage")).toBeVisible();
+    expect(screen.getAllByText("$138.00").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText("$28.00")).not.toBeInTheDocument();
+  });
+
   it("filters the work queue and toggles source evidence", async () => {
     const user = userEvent.setup();
     render(<App />);
