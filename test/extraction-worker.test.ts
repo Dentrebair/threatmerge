@@ -43,8 +43,20 @@ describe("extraction worker", () => {
 
   it("requires a real source page and validates optional normalized boxes", () => {
     expect(() => validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 0 } }] })).toThrow("invalid source page");
-    expect(() => validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 1, boundingBox: { x: 0.9, y: 0.1, width: 0.2, height: 0.1 } } }] })).toThrow("invalid source bounding box");
     expect(validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 1, boundingBox: { x: 0.1, y: 0.1, width: 0.2, height: 0.1 } } }] }).observations[0]?.sourceLocation).toMatchObject({ page: 1 });
+  });
+
+  it("drops a malformed bounding box instead of rejecting the whole observation", () => {
+    const result = validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 1, boundingBox: { x: 0.9, y: 341, width: 0.2, height: 0.1 } } }] });
+    expect(result.observations[0]?.sourceLocation).toEqual({ page: 1 });
+  });
+
+  it("accepts flat-fee line items without quantity or unitPrice but rejects an invalid amount", () => {
+    const lineItem = (line: Record<string, unknown>) => ({ fieldName: "lineItems", value: [line], sourceLocation: { page: 1 }, confidence: 0.9 });
+    expect(() => validateExtractionResult({ ...validResult, observations: [lineItem({ description: "A&H Journey Fee", amount: "381.36" })] })).not.toThrow();
+    expect(() => validateExtractionResult({ ...validResult, observations: [lineItem({ description: "Shipping", quantity: "2", unitPrice: "10.00", amount: "20.00" })] })).not.toThrow();
+    expect(() => validateExtractionResult({ ...validResult, observations: [lineItem({ description: "A&H Journey Fee", amount: "not-a-number" })] })).toThrow("invalid line items");
+    expect(() => validateExtractionResult({ ...validResult, observations: [lineItem({ description: "Shipping", quantity: "not-a-number", amount: "20.00" })] })).toThrow("invalid line items");
   });
 
   it("records provider outages as retryable failures", async () => {

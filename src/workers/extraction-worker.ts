@@ -77,13 +77,11 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
     const page = observation.sourceLocation.page;
     if (!Number.isSafeInteger(page) || Number(page) < 1) throw new Error("extractor returned an invalid source page");
     const boundingBox = observation.sourceLocation.boundingBox;
-    if (boundingBox !== undefined && (!isRecord(boundingBox)
-      || !["x", "y", "width", "height"].every((key) => typeof boundingBox[key] === "number" && Number.isFinite(boundingBox[key]) && Number(boundingBox[key]) >= 0 && Number(boundingBox[key]) <= 1)
-      || Number(boundingBox.x) + Number(boundingBox.width) > 1
-      || Number(boundingBox.y) + Number(boundingBox.height) > 1)) {
-      console.error(`Rejected bounding box for ${observation.fieldName}:`, JSON.stringify(boundingBox));
-      throw new Error("extractor returned an invalid source bounding box");
-    }
+    const validBoundingBox = boundingBox !== undefined && isRecord(boundingBox)
+      && ["x", "y", "width", "height"].every((key) => typeof boundingBox[key] === "number" && Number.isFinite(boundingBox[key]) && Number(boundingBox[key]) >= 0 && Number(boundingBox[key]) <= 1)
+      && Number(boundingBox.x) + Number(boundingBox.width) <= 1
+      && Number(boundingBox.y) + Number(boundingBox.height) <= 1;
+    if (boundingBox !== undefined && !validBoundingBox) console.warn(`Dropped malformed bounding box for ${observation.fieldName}:`, JSON.stringify(boundingBox));
     if (DECIMAL_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !DECIMAL_PATTERN.test(observation.value))) {
       throw new Error(`extractor returned an invalid ${observation.fieldName}`);
     }
@@ -97,7 +95,7 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
     return {
       fieldName: observation.fieldName,
       value: observation.value,
-      sourceLocation: observation.sourceLocation,
+      sourceLocation: validBoundingBox ? observation.sourceLocation : { page },
       confidence: observation.confidence,
     };
   });
@@ -120,8 +118,14 @@ function validateLineItems(value: unknown): void {
       console.error("Rejected line item (bad description):", JSON.stringify(line));
       throw new Error("extractor returned invalid line items");
     }
-    for (const key of ["quantity", "unitPrice", "amount"] as const) {
-      if (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key])) {
+    if (typeof line.amount !== "string" || !DECIMAL_PATTERN.test(line.amount)) {
+      console.error("Rejected line item field \"amount\":", JSON.stringify(line.amount), "full line:", JSON.stringify(line));
+      throw new Error("extractor returned invalid line items");
+    }
+    // quantity and unitPrice are omitted by the model for flat-fee lines (no per-unit
+    // breakdown on the source document); only validate them when actually present.
+    for (const key of ["quantity", "unitPrice"] as const) {
+      if (line[key] !== undefined && (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key]))) {
         console.error(`Rejected line item field "${key}":`, JSON.stringify(line[key]), "full line:", JSON.stringify(line));
         throw new Error("extractor returned invalid line items");
       }
