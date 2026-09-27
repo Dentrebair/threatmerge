@@ -80,7 +80,10 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
     if (boundingBox !== undefined && (!isRecord(boundingBox)
       || !["x", "y", "width", "height"].every((key) => typeof boundingBox[key] === "number" && Number.isFinite(boundingBox[key]) && Number(boundingBox[key]) >= 0 && Number(boundingBox[key]) <= 1)
       || Number(boundingBox.x) + Number(boundingBox.width) > 1
-      || Number(boundingBox.y) + Number(boundingBox.height) > 1)) throw new Error("extractor returned an invalid source bounding box");
+      || Number(boundingBox.y) + Number(boundingBox.height) > 1)) {
+      console.error(`Rejected bounding box for ${observation.fieldName}:`, JSON.stringify(boundingBox));
+      throw new Error("extractor returned an invalid source bounding box");
+    }
     if (DECIMAL_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !DECIMAL_PATTERN.test(observation.value))) {
       throw new Error(`extractor returned an invalid ${observation.fieldName}`);
     }
@@ -108,11 +111,20 @@ function isIsoDate(value: string): boolean {
 }
 
 function validateLineItems(value: unknown): void {
-  if (!Array.isArray(value) || value.length > 500) throw new Error("extractor returned invalid line items");
+  if (!Array.isArray(value) || value.length > 500) {
+    console.error("Rejected line items array:", JSON.stringify(value)?.slice(0, 500));
+    throw new Error("extractor returned invalid line items");
+  }
   for (const line of value) {
-    if (!isRecord(line) || typeof line.description !== "string" || !line.description.trim()) throw new Error("extractor returned invalid line items");
+    if (!isRecord(line) || typeof line.description !== "string" || !line.description.trim()) {
+      console.error("Rejected line item (bad description):", JSON.stringify(line));
+      throw new Error("extractor returned invalid line items");
+    }
     for (const key of ["quantity", "unitPrice", "amount"] as const) {
-      if (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key])) throw new Error("extractor returned invalid line items");
+      if (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key])) {
+        console.error(`Rejected line item field "${key}":`, JSON.stringify(line[key]), "full line:", JSON.stringify(line));
+        throw new Error("extractor returned invalid line items");
+      }
     }
   }
 }
