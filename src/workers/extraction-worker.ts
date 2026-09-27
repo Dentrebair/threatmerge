@@ -147,6 +147,8 @@ export async function processExtractionBatch(backend: ExtractionBackend, extract
         : message.includes("extractor unavailable") || (reason instanceof Error && ["AbortError", "TimeoutError"].includes(reason.name)) ? "EXTRACTOR_UNAVAILABLE"
         : message.includes("extractor returned") || message.includes("extractor response") ? "INVALID_EXTRACTION_RESPONSE"
           : "EXTRACTION_PROCESSING_FAILED";
+      const cause = reason instanceof Error && reason.cause ? ` (cause: ${String(reason.cause)})` : "";
+      console.error(`Extraction job ${job.id} failed as ${code}: ${message}${cause}`);
       await backend.fail(job, code);
     }
   }));
@@ -223,7 +225,7 @@ async function main() {
   const workerId = `extraction-${process.pid}`; console.log(`Extraction worker ${workerId} started`);
   await runExtractionWorker(backend, new HttpDocumentExtractor(config.extractorUrl, config.extractorToken, config.requestTimeoutMs), workerId,
     { batchSize: config.batchSize, idleDelayMs: config.idleDelayMs, errorDelayMs: config.errorDelayMs, signal: controller.signal,
-      onCycle: ({ processed, error }) => { if (error) console.error(`Extraction worker cycle failed: ${error.message}`); else if (processed) console.log(`Claimed ${processed} extraction job${processed === 1 ? "" : "s"}`); } });
+      onCycle: ({ processed, error }) => { if (error) console.error(`Extraction worker cycle failed: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`); else if (processed) console.log(`Claimed ${processed} extraction job${processed === 1 ? "" : "s"}`); } });
   process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Extraction worker ${workerId} stopped`);
 }
 

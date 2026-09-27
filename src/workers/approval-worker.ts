@@ -58,7 +58,7 @@ async function main() {
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   const workerId = `approval-${process.pid}`; console.log(`Approval worker ${workerId} started`);
   await runApprovalWorker(backend, workerId, { signal: controller.signal,
-    onCycle: ({ processed, error }) => { if (error) console.error(`Approval worker cycle failed: ${error.message}`); else if (processed) console.log(`Processed ${processed} approval routing job${processed === 1 ? "" : "s"}`); } });
+    onCycle: ({ processed, error }) => { if (error) console.error(`Approval worker cycle failed: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`); else if (processed) console.log(`Processed ${processed} approval routing job${processed === 1 ? "" : "s"}`); } });
   process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Approval worker ${workerId} stopped`);
 }
 

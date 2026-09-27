@@ -213,7 +213,7 @@ async function main() {
     errorDelayMs: config.errorDelayMs,
     signal: controller.signal,
     onCycle: ({ processed, error }) => {
-      if (error) console.error(`Evidence worker cycle failed: ${error.message}`);
+      if (error) console.error(`Evidence worker cycle failed: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`);
       else if (processed > 0) console.log(`Processed ${processed} evidence scan job${processed === 1 ? "" : "s"}`);
     },
   });

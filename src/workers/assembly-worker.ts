@@ -64,7 +64,7 @@ async function main() {
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   const workerId = `assembly-${process.pid}`; console.log(`Assembly worker ${workerId} started`);
   await runAssemblyWorker(backend, workerId, { signal: controller.signal,
-    onCycle: ({ processed, error }) => { if (error) console.error(`Assembly worker cycle failed: ${error.message}`); else if (processed) console.log(`Processed ${processed} invoice assembly job${processed === 1 ? "" : "s"}`); } });
+    onCycle: ({ processed, error }) => { if (error) console.error(`Assembly worker cycle failed: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`); else if (processed) console.log(`Processed ${processed} invoice assembly job${processed === 1 ? "" : "s"}`); } });
   process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); console.log(`Assembly worker ${workerId} stopped`);
 }
 
