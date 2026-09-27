@@ -9,6 +9,10 @@ export interface ExtractedObservation {
   sourceLocation: Record<string, unknown>;
   confidence: number;
 }
+const ALLOWED_FIELDS = new Set(["documentType", "issuer", "invoiceNumber", "invoiceDate", "billTo", "currency", "subtotal", "tax", "total", "dueDate", "lineItems"]);
+const DECIMAL_FIELDS = new Set(["subtotal", "tax", "total"]);
+const DECIMAL_PATTERN = /^\d+(\.\d{1,4})?$/;
+const DATE_FIELDS = new Set(["invoiceDate", "dueDate"]);
 export interface ExtractionResult {
   provider: string;
   modelVersion: string;
@@ -69,6 +73,24 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
       || !isRecord(observation.sourceLocation) || typeof observation.confidence !== "number"
       || !Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1
       || !("value" in observation)) throw new Error("extractor returned an invalid observation");
+    if (!ALLOWED_FIELDS.has(observation.fieldName)) throw new Error("extractor returned an unsupported field");
+    const page = observation.sourceLocation.page;
+    if (!Number.isSafeInteger(page) || Number(page) < 1) throw new Error("extractor returned an invalid source page");
+    const boundingBox = observation.sourceLocation.boundingBox;
+    if (boundingBox !== undefined && (!isRecord(boundingBox)
+      || !["x", "y", "width", "height"].every((key) => typeof boundingBox[key] === "number" && Number.isFinite(boundingBox[key]) && Number(boundingBox[key]) >= 0 && Number(boundingBox[key]) <= 1)
+      || Number(boundingBox.x) + Number(boundingBox.width) > 1
+      || Number(boundingBox.y) + Number(boundingBox.height) > 1)) throw new Error("extractor returned an invalid source bounding box");
+    if (DECIMAL_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !DECIMAL_PATTERN.test(observation.value))) {
+      throw new Error(`extractor returned an invalid ${observation.fieldName}`);
+    }
+    if (DATE_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !isIsoDate(observation.value))) {
+      throw new Error(`extractor returned an invalid ${observation.fieldName}`);
+    }
+    if (observation.fieldName === "currency" && (typeof observation.value !== "string" || !/^[A-Z]{3}$/.test(observation.value))) {
+      throw new Error("extractor returned an invalid currency");
+    }
+    if (observation.fieldName === "lineItems") validateLineItems(observation.value);
     return {
       fieldName: observation.fieldName,
       value: observation.value,
@@ -77,6 +99,22 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
     };
   });
   return { provider, modelVersion, promptVersion, startedAt, observations: validated };
+}
+
+function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validateLineItems(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 500) throw new Error("extractor returned invalid line items");
+  for (const line of value) {
+    if (!isRecord(line) || typeof line.description !== "string" || !line.description.trim()) throw new Error("extractor returned invalid line items");
+    for (const key of ["quantity", "unitPrice", "amount"] as const) {
+      if (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key])) throw new Error("extractor returned invalid line items");
+    }
+  }
 }
 
 export async function processExtractionBatch(backend: ExtractionBackend, extractor: DocumentExtractor, workerId: string, limit = 5): Promise<number> {
@@ -88,7 +126,9 @@ export async function processExtractionBatch(backend: ExtractionBackend, extract
       await backend.complete(job, result);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "";
-      const code = message.includes("extractor unavailable") || (reason instanceof Error && ["AbortError", "TimeoutError"].includes(reason.name)) ? "EXTRACTOR_UNAVAILABLE"
+      const code = message.includes("NOT_AN_INVOICE") ? "NOT_AN_INVOICE"
+        : message.includes("MULTIPLE_INVOICES") ? "MULTIPLE_INVOICES"
+        : message.includes("extractor unavailable") || (reason instanceof Error && ["AbortError", "TimeoutError"].includes(reason.name)) ? "EXTRACTOR_UNAVAILABLE"
         : message.includes("extractor returned") || message.includes("extractor response") ? "INVALID_EXTRACTION_RESPONSE"
           : "EXTRACTION_PROCESSING_FAILED";
       await backend.fail(job, code);
@@ -149,7 +189,12 @@ export class HttpDocumentExtractor implements DocumentExtractor {
     const form = new FormData();
     form.set("document", content, "evidence");
     const response = await fetch(this.endpoint, { method: "POST", headers: { authorization: `Bearer ${this.token}` }, body: form, signal: AbortSignal.timeout(this.timeoutMs) });
-    if (!response.ok) throw new Error(`extractor unavailable (${response.status})`);
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { error?: string } | null;
+      if (response.status === 422 && body?.error === "not_an_invoice") throw new Error("NOT_AN_INVOICE");
+      if (response.status === 422 && body?.error === "multiple_invoices") throw new Error("MULTIPLE_INVOICES");
+      throw new Error(`extractor unavailable (${response.status})`);
+    }
     return validateExtractionResult(await response.json());
   }
 }

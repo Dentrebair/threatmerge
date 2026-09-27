@@ -23,6 +23,7 @@ import {
   ShieldAlert,
   Upload,
   UserCheck,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -49,6 +50,7 @@ export interface QueueItem {
   linked: boolean;
   linkedTransactionId?: string;
   blocker?: string;
+  blockerCode?: string;
   invoiceNumber?: string;
   description: string;
   assignedToMe: boolean;
@@ -62,6 +64,7 @@ export interface QueueItem {
   lineItems?: Array<{ description: string; quantity: string; unitPrice: string; amount: string }>;
   subtotalAmount?: string;
   taxAmount?: string;
+  provenance?: Record<string, { confidence: number | null; page: number; boundingBox?: { x: number; y: number; width: number; height: number }; provider: string; modelVersion: string; promptVersion: string; extractedAt: string }>;
 }
 
 export interface InvoiceDraft {
@@ -101,6 +104,14 @@ const initialQueue: QueueItem[] = [
     blocker: "Invoice number missing",
     description: "Residential inspection",
     assignedToMe: true,
+    provenance: Object.fromEntries(["invoiceDate", "issuer", "billTo", "currency", "lineItems"].map((field) => [field, {
+      confidence: field === "billTo" ? 0.96 : field === "invoiceDate" ? 0.98 : 0.99,
+      page: 1,
+      provider: "fixture",
+      modelVersion: "fixture-v1",
+      promptVersion: "invoice-observations-v3",
+      extractedAt: "2026-09-18T12:00:00.000Z",
+    }])),
   },
   {
     id: "inv-1047",
@@ -131,7 +142,7 @@ const initialQueue: QueueItem[] = [
   {
     id: "inv-1045",
     issuer: "Unrecognized upload",
-    reference: "image_2049.heic",
+    reference: "image_2049.jpg",
     amount: "—",
     age: "2 hr",
     status: "Quarantined",
@@ -167,7 +178,7 @@ const statusTone: Record<QueueStatus, string> = {
 interface FieldProps {
   label: string;
   value: string;
-  confidence?: string;
+  confidence?: string | undefined;
   required?: boolean;
   invalid?: boolean;
   onChange?: (value: string) => void;
@@ -226,13 +237,15 @@ function SourceDocument({
   item: QueueItem;
 }) {
   if (item.sourceUrl) {
-    const highlighted = highlight ? " actual-source-highlight" : "";
+    const provenance = highlight ? item.provenance?.[highlight] : undefined;
+    const sourceUrl = item.sourceMediaType === "application/pdf" && provenance ? `${item.sourceUrl}#page=${provenance.page}` : item.sourceUrl;
     return (
-      <div className={`actual-source-wrap${highlighted}`} aria-label="Source invoice preview">
+      <div className="actual-source-wrap" aria-label="Source invoice preview">
         {item.sourceMediaType === "application/pdf" ? (
-          <iframe className="actual-source-pdf" src={item.sourceUrl} title="Uploaded invoice" />
+          <iframe className="actual-source-pdf" src={sourceUrl} title="Uploaded invoice" />
         ) : (
-          <img className="actual-source-image" src={item.sourceUrl} alt="Uploaded invoice" />
+          <><img className="actual-source-image" src={sourceUrl} alt="Uploaded invoice" />
+          {provenance?.boundingBox ? <span className="actual-source-box" aria-label={`Source location for ${highlight}`} style={{ left: `${provenance.boundingBox.x * 100}%`, top: `${provenance.boundingBox.y * 100}%`, width: `${provenance.boundingBox.width * 100}%`, height: `${provenance.boundingBox.height * 100}%` }} /> : null}</>
         )}
       </div>
     );
@@ -261,7 +274,7 @@ function SourceDocument({
             <span>219 Broad Street</span>
             <span>Austin, TX 78701</span>
           </div>
-          <div className={highlight === "date" ? "source-highlight" : ""} data-source-field="date" aria-label="Invoice date source">
+          <div className={highlight === "invoiceDate" ? "source-highlight" : ""} data-source-field="invoiceDate" aria-label="Invoice date source">
             <small>DATE</small>
             <strong>September 18, 2026</strong>
           </div>
@@ -282,7 +295,7 @@ function SourceDocument({
             </tr>
           </thead>
           <tbody>
-            <tr className={highlight === "line" ? "source-highlight" : ""} data-source-field="line" aria-label="Line item source">
+            <tr className={highlight === "lineItems" ? "source-highlight" : ""} data-source-field="lineItems" aria-label="Line item source">
               <td>{item.description}</td>
               <td>1</td>
               <td>{item.amount}</td>
@@ -303,6 +316,11 @@ function SourceDocument({
       </article>
     </div>
   );
+}
+
+function confidenceFor(item: QueueItem | undefined, field: string): string | undefined {
+  const confidence = item?.provenance?.[field]?.confidence;
+  return confidence === null || confidence === undefined ? undefined : `${Math.round(confidence * 100)}%`;
 }
 
 function EvidenceStack({ highlight }: { highlight: string | null }) {
@@ -337,6 +355,8 @@ interface AppProps {
   onReprocess?: (input: { invoiceId: string; expectedVersion: number }) => Promise<void>;
   onUpload?: (file: File) => Promise<void>;
   onCancelIntake?: (ingestionEventId: string) => Promise<void>;
+  onDismissIntake?: (ingestionEventId: string) => Promise<void>;
+  onDismissInvoice?: (input: { invoiceId: string; expectedVersion: number }) => Promise<void>;
   workspaceRole?: "TENANT_ADMIN" | "REVIEWER" | "VIEWER" | "INTEGRATION";
   approvalPolicy?: ApprovalPolicy | null;
   onPublishApprovalPolicy?: (mode: ApprovalMode, rules: ApprovalPolicy["rules"]) => Promise<ApprovalPolicy>;
@@ -377,7 +397,7 @@ interface AppProps {
   onReopenTransactionFile?: TransactionWorkspaceProps["onReopenFile"];
 }
 
-export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onReprocess, onUpload, onCancelIntake, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
+export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onReprocess, onUpload, onCancelIntake, onDismissIntake, onDismissInvoice, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
   const [queue, setQueue] = useState(initialQueueItems);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");
   const [invoiceNumbers, setInvoiceNumbers] = useState<Record<string, string>>(
@@ -403,6 +423,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   const [showSource, setShowSource] = useState(initialQueueItems[0]?.status !== "Processing" && initialQueueItems[0]?.status !== "Quarantined");
   const [showQueue, setShowQueue] = useState(false);
   const [showApprove, setShowApprove] = useState(false);
+  const [dismissItem, setDismissItem] = useState<QueueItem | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilter, setStatusFilter] = useState<QueueStatus | "All">("All");
   const [toast, setToast] = useState<string | null>(null);
@@ -410,6 +431,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [activeNav, setActiveNav] = useState<"work" | "invoices" | "transactions" | "archive">("work");
   const [selectedTransactionId, setSelectedTransactionId] = useState<string | undefined>();
+  const [linkingInvoiceId, setLinkingInvoiceId] = useState<string | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [commandPending, setCommandPending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -457,6 +479,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   }, []);
 
   const selected = queue.find(({ id }) => id === selectedId) ?? queue[0];
+  const linkingInvoice = linkingInvoiceId ? queue.find(({ id }) => id === linkingInvoiceId) : undefined;
   const invoiceNumber = selected ? (invoiceNumbers[selected.id] ?? "") : "";
   const draft = selected ? drafts[selected.id] : undefined;
   const total = Number(draft?.quantity || 0) * Number(draft?.rate || 0);
@@ -465,25 +488,34 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     currency: draft?.currency || "USD",
   }).format(Number.isFinite(total) ? total : 0);
   const displayedTotal = selected?.databaseVersion !== undefined ? selected.amount : formattedTotal;
+  const queueView = activeNav === "archive"
+    ? { title: "Verified invoices", search: "Search verified invoices", empty: "No verified invoices", emptyHint: "Verified invoices will appear here." }
+    : activeNav === "invoices"
+      ? { title: "Invoices", search: "Search invoices", empty: "No matching invoices", emptyHint: "Adjust the search or status filter." }
+      : { title: "Work queue", search: "Search assigned work", empty: "No matching work", emptyHint: "Adjust the search or queue filter." };
   const filteredQueue = useMemo(
     () =>
       queue.filter(
         (item) =>
+          (activeNav !== "work" || item.status !== "Verified") &&
+          (activeNav !== "invoices" || item.status !== "Verified") &&
+          (activeNav !== "archive" || item.status === "Verified") &&
           (activeFilter === "all" || item.assignedToMe) &&
           (statusFilter === "All" || item.status === statusFilter) &&
           `${item.issuer} ${item.reference} ${item.status}`
             .toLowerCase()
             .includes(query.toLowerCase()),
       ),
-    [activeFilter, query, queue, statusFilter],
+    [activeFilter, activeNav, query, queue, statusFilter],
   );
-  const filteredTransactionActions = useMemo(() => transactionActions.filter((item) => {
+  const filteredTransactionActions = useMemo(() => activeNav === "work" ? transactionActions.filter((item) => {
     const transaction = transactions.find((candidate) => candidate.id === item.transactionId);
     return (activeFilter === "all" || item.assignedToMe)
       && `${transaction?.propertyAddress ?? ""} ${transaction?.externalReference ?? ""} ${item.requirementKey}`.toLowerCase().includes(query.toLowerCase());
-  }), [activeFilter, query, transactionActions, transactions]);
+  }) : [], [activeFilter, activeNav, query, transactionActions, transactions]);
   const hasBlocker = selected?.origin === "Captured" && invoiceNumber.trim() === "";
-  const isPersistedIncomplete = selected?.databaseVersion !== undefined && selected.status === "Needs attention";
+  const isDuplicateBlocked = selected?.blockerCode === "PROBABLE_DUPLICATE";
+  const isPersistedIncomplete = selected?.databaseVersion !== undefined && selected.status === "Needs attention" && !isDuplicateBlocked;
   const canApprove = selected?.databaseVersion !== undefined
     ? selected.status === "Ready to review" && !hasBlocker
     : selected?.status !== "Processing" && selected?.status !== "Quarantined" && !hasBlocker;
@@ -577,10 +609,17 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   }
 
   function showQueueView(scope: "work" | "invoices" | "archive") {
+    setLinkingInvoiceId(null);
     setActiveNav(scope);
     setQuery("");
     setActiveFilter(scope === "work" ? "mine" : "all");
     setStatusFilter(scope === "archive" ? "Verified" : "All");
+    const next = scope === "work"
+      ? queue.find((item) => item.status !== "Verified")
+      : scope === "archive"
+        ? queue.find((item) => item.status === "Verified")
+        : queue[0];
+    if (next) setSelectedId(next.id);
     setShowQueue(true);
   }
 
@@ -718,27 +757,51 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     }
   }
 
+  async function dismissQueueItem() {
+    if (!dismissItem) return;
+    setCommandPending(true);
+    setCommandError(null);
+    try {
+      if (dismissItem.databaseVersion !== undefined && onDismissInvoice) {
+        await onDismissInvoice({ invoiceId: dismissItem.id, expectedVersion: dismissItem.databaseVersion });
+      } else if (dismissItem.ingestionEventId && onDismissIntake) {
+        await onDismissIntake(dismissItem.ingestionEventId);
+      } else {
+        throw new Error("This item cannot be removed from the queue.");
+      }
+      const remaining = queue.filter((item) => item.id !== dismissItem.id);
+      setQueue(remaining);
+      if (selectedId === dismissItem.id) setSelectedId(remaining[0]?.id ?? "");
+      setDismissItem(null);
+      notify("Invoice removed from the active queue. Its audit history was retained.");
+    } catch (reason) {
+      setCommandError(reason instanceof Error ? reason.message : "Unable to remove this invoice");
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="app-nav" aria-label="Primary navigation">
         <div className="brand-mark" title="ThreadMerge">TM</div>
         <nav>
           <button className={`nav-icon ${activeNav === "work" ? "active" : ""}`} title="Work queue" aria-label="Work queue" aria-current={activeNav === "work" ? "page" : undefined} onClick={() => showQueueView("work")}>
-            <Inbox size={20} />
+            <Inbox size={20} /><span className="nav-label">Work queue</span>
           </button>
           <button className={`nav-icon ${activeNav === "invoices" ? "active" : ""}`} title="Invoices" aria-label="Invoices" aria-current={activeNav === "invoices" ? "page" : undefined} onClick={() => showQueueView("invoices")}>
-            <FileCheck2 size={20} />
+            <FileCheck2 size={20} /><span className="nav-label">Invoices</span>
           </button>
-          <button className={`nav-icon ${activeNav === "transactions" ? "active" : ""}`} title="Transaction Files" aria-label="Transaction Files" aria-current={activeNav === "transactions" ? "page" : undefined} onClick={() => setActiveNav("transactions")}>
-            <Files size={20} />
+          <button className={`nav-icon ${activeNav === "transactions" ? "active" : ""}`} title="Transaction Files" aria-label="Transaction Files" aria-current={activeNav === "transactions" ? "page" : undefined} onClick={() => { setLinkingInvoiceId(null); setSelectedTransactionId(undefined); setActiveNav("transactions"); }}>
+            <Files size={20} /><span className="nav-label">Transaction Files</span>
           </button>
           <button className={`nav-icon ${activeNav === "archive" ? "active" : ""}`} title="Archive" aria-label="Archive" aria-current={activeNav === "archive" ? "page" : undefined} onClick={() => showQueueView("archive")}>
-            <Archive size={20} />
+            <Archive size={20} /><span className="nav-label">Verified</span>
           </button>
         </nav>
         <div className="nav-bottom" ref={userMenuRef}>
           <button className={`nav-icon ${showSettings ? "active" : ""}`} title="Settings" aria-label="Settings" aria-expanded={showSettings} onClick={() => setShowSettings(true)}>
-            <Settings size={20} />
+            <Settings size={20} /><span className="nav-label">Settings</span>
           </button>
           <button className="avatar" title={userEmail} aria-label="User menu" aria-expanded={showUserMenu} onClick={() => setShowUserMenu((current) => !current)}>
             {userEmail.split(/[@\s]/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "U"}
@@ -750,13 +813,13 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         </div>
       </aside>
 
-      {activeNav === "transactions" ? <TransactionWorkspace transactions={transactions} {...(selectedTransactionId ? { initialSelectedId: selectedTransactionId } : {})} transactionTypes={transactionTypes} ownerOptions={transactionOwners} linkageProposals={linkageProposals} {...(selected?.databaseVersion === undefined || selected.status === "Processing" || selected.status === "Quarantined" ? { invoiceLinkMessage: selected?.status === "Processing" ? "The selected upload must finish processing before it can be linked. You can return later; the Transaction File will remain available." : "Select a processed, unlinked invoice from the review queue, then return here to link it." } : { selectedInvoice: { id: selected.id, version: selected.databaseVersion, label: `${selected.issuer}${selected.invoiceNumber ? ` · ${selected.invoiceNumber}` : ""}`, linked: selected.linked, ...(selected.linkedTransactionId ? { linkedTransactionId: selected.linkedTransactionId } : {}) } })} onClose={() => setActiveNav("work")}
+      {activeNav === "transactions" ? <TransactionWorkspace transactions={transactions} {...(selectedTransactionId ? { initialSelectedId: selectedTransactionId } : {})} transactionTypes={transactionTypes} ownerOptions={transactionOwners} linkageProposals={linkageProposals} {...(linkingInvoice?.databaseVersion !== undefined ? { selectedInvoice: { id: linkingInvoice.id, version: linkingInvoice.databaseVersion, label: `${linkingInvoice.issuer}${linkingInvoice.invoiceNumber ? ` · ${linkingInvoice.invoiceNumber}` : ""}`, linked: linkingInvoice.linked, ...(linkingInvoice.linkedTransactionId ? { linkedTransactionId: linkingInvoice.linkedTransactionId } : {}) } } : {})} onClose={() => { setLinkingInvoiceId(null); setActiveNav("work"); }}
         onCreate={onCreateTransaction ?? (async () => undefined)}
         {...(onAddTransactionRequirement ? { onAddRequirement: onAddTransactionRequirement } : {})}
         {...(onUpdateTransactionDetails ? { onUpdateDetails: onUpdateTransactionDetails } : {})}
         {...(onRemoveTransactionRequirement ? { onRemoveRequirement: onRemoveTransactionRequirement } : {})}
-        onLink={async (transaction) => { if (selected && onLinkTransaction) await onLinkTransaction(transaction, selected); }}
-        onResolveProposal={async (proposal, decision) => { if (selected && onResolveLinkageProposal) await onResolveLinkageProposal(proposal, selected, decision); }}
+        onLink={async (transaction) => { if (linkingInvoice && onLinkTransaction) { await onLinkTransaction(transaction, linkingInvoice); setLinkingInvoiceId(null); } }}
+        onResolveProposal={async (proposal, decision) => { const proposalInvoice = queue.find((item) => item.id === proposal.invoiceId); if (proposalInvoice && onResolveLinkageProposal) await onResolveLinkageProposal(proposal, proposalInvoice, decision); }}
         onRequirement={onUpdateTransactionRequirement ?? (async () => undefined)}
         onEvaluate={onEvaluateTransaction ?? (async () => undefined)}
         onApprove={onApproveTransaction ?? (async () => undefined)}
@@ -791,7 +854,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
           </div>
           <div className="queue-title-row">
             <div>
-              <h1>Review queue</h1>
+              <h1>{queueView.title}</h1>
               <p>{filteredQueue.length + filteredTransactionActions.length} {filteredQueue.length + filteredTransactionActions.length === 1 ? "item" : "items"} shown</p>
             </div>
             <button
@@ -804,6 +867,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             </button>
           </div>
           <div className="queue-tools">
+            {activeNav === "work" ? <>
             <div className="segmented" aria-label="Queue scope">
               <button
                 className={activeFilter === "mine" ? "selected" : ""}
@@ -820,6 +884,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                 All
               </button>
             </div>
+            </> : null}
             <button
               className={`icon-button ${showFilters ? "pressed" : ""}`}
               type="button"
@@ -850,7 +915,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
           <label className="search-box">
             <Search size={16} />
             <input
-              placeholder="Search work"
+              placeholder={queueView.search}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -862,14 +927,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
           {filteredTransactionActions.map((item) => {
             const transaction = transactions.find((candidate) => candidate.id === item.transactionId);
             const label = item.kind === "PROVIDE_DOCUMENT" ? "Document missing" : item.kind === "PROVIDE_INFORMATION" ? "Information missing" : item.kind === "RESOLVE_CONFLICT" ? "Resolve conflict" : "Needs confirmation";
-            return <button className="queue-item transaction-task" type="button" key={item.id} onClick={() => { setSelectedTransactionId(item.transactionId); setActiveNav("transactions"); setShowQueue(false); }}><div className="queue-item-top"><span className="status-dot warning" /><strong>{transaction?.propertyAddress ?? "Transaction File"}</strong><span className="age">Deal</span></div><span className="queue-reference">{humanizeQueueValue(item.requirementKey)}</span><div className="queue-meta"><span className="status-label warning">{label}</span><span className="amount">{transaction?.externalReference || ""}</span></div></button>;
+            return <button className="queue-item transaction-task" type="button" key={item.id} onClick={() => { setLinkingInvoiceId(null); setSelectedTransactionId(item.transactionId); setActiveNav("transactions"); setShowQueue(false); }}><div className="queue-item-top"><span className="status-dot warning" /><strong>{transaction?.propertyAddress ?? "Transaction File"}</strong><span className="age">Deal</span></div><span className="queue-reference">{humanizeQueueValue(item.requirementKey)}</span><div className="queue-meta"><span className="status-label warning">{label}</span><span className="amount">{transaction?.externalReference || ""}</span></div></button>;
           })}
           {filteredTransactionActions.length > 0 && filteredQueue.length > 0 ? <div className="queue-group-label">Invoices</div> : null}
           {filteredQueue.map((item) => (
+            <div className="queue-item-shell" key={item.id}>
             <button
               className={`queue-item ${selected?.id === item.id ? "selected" : ""}`}
               type="button"
-              key={item.id}
               onClick={() => selectInvoice(item.id)}
             >
               <div className="queue-item-top">
@@ -889,23 +954,25 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                 </span>
               ) : null}
             </button>
+            {(onDismissInvoice || onDismissIntake) && workspaceRole !== "VIEWER" ? <button className="queue-dismiss" type="button" title="Remove from queue" aria-label={`Remove ${item.issuer} from queue`} onClick={() => { setCommandError(null); setDismissItem(item); }}><Trash2 size={15} /></button> : null}
+            </div>
           ))}
           {filteredQueue.length === 0 && filteredTransactionActions.length === 0 ? (
-            <div className="empty-queue"><FileSearch size={22} /><strong>No matching work</strong><span>Adjust the search or queue filter.</span></div>
+            <div className="empty-queue"><FileSearch size={22} /><strong>{queueView.empty}</strong><span>{queueView.emptyHint}</span></div>
           ) : null}
         </div>
-        <footer className="queue-footer">
+        {activeNav !== "archive" ? <footer className="queue-footer">
           <input
             ref={fileInput}
             type="file"
             hidden
-            accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx,.xls,.xlsx,.csv"
+            accept=".pdf,.png,.jpg,.jpeg"
             onChange={(event) => void handleUpload(event.target.files?.[0])}
           />
           <button className="upload-button" type="button" disabled={commandPending} onClick={() => fileInput.current?.click()}>
             <Upload size={17} /> {commandPending ? "Uploading..." : "Upload invoice"}
           </button>
-        </footer>
+        </footer> : null}
       </section>
 
       <main className="review-area">
@@ -924,6 +991,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             <p>{selected?.reference}</p>
           </div>
           <div className="header-actions" ref={actionsMenuRef}>
+            {selected?.databaseVersion !== undefined && !selected.linked && !["Processing", "Quarantined"].includes(selected.status) ? <button className="secondary-button header-link-button" type="button" title="Link to Transaction File" aria-label="Link to Transaction File" onClick={() => { setLinkingInvoiceId(selected.id); setSelectedTransactionId(undefined); setActiveNav("transactions"); }}><Link size={16} /> Link to file</button> : null}
             <button
               className="icon-button source-toggle"
               type="button"
@@ -972,14 +1040,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             <section className="quarantine-panel" aria-label="Quarantined file">
               <div className="state-symbol quarantine-symbol"><ShieldAlert size={24} /></div>
               <h3>File not recognized</h3>
-              <p>{selected.blocker}. No invoice was generated and the file was not sent for extraction.</p>
+              <p>{selected.blocker}{["NOT_AN_INVOICE", "UNRECOGNIZED_INVOICE"].includes(selected.blockerCode ?? "") ? "" : ". No invoice was generated."}</p>
               <button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>
                 <Upload size={16} /> Replace file
               </button>
             </section>
           ) : <section className="form-panel">
             <div className="form-scroll">
-              {commandError && !isPersistedIncomplete ? <div className="blocker-banner" role="alert"><AlertTriangle size={18} /><div><strong>Action failed</strong><span>{commandError}</span></div></div> : null}
+              {commandError && !isPersistedIncomplete && !isDuplicateBlocked ? <div className="blocker-banner" role="alert"><AlertTriangle size={18} /><div><strong>Action failed</strong><span>{commandError}</span></div></div> : null}
               {selected?.status === "Verified" ? (
                 <div className="ready-banner">
                   <CheckCircle2 size={18} />
@@ -994,6 +1062,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <div>
                     <strong>1 blocker before approval</strong>
                     <span>Enter the missing invoice number.</span>
+                  </div>
+                </div>
+              ) : isDuplicateBlocked ? (
+                <div className="blocker-banner" role="alert">
+                  <AlertTriangle size={18} />
+                  <div>
+                    <strong>Possible duplicate invoice</strong>
+                    <span>Compare this upload with the existing invoice before continuing.</span>
                   </div>
                 </div>
               ) : isPersistedIncomplete ? (
@@ -1039,6 +1115,8 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <InvoiceField
                     label="Invoice number"
                     value={invoiceNumber}
+                    confidence={confidenceFor(selected, "invoiceNumber")}
+                    onInspect={() => inspectSource("invoiceNumber")}
                     required
                     invalid={hasBlocker}
                     {...(selected?.status === "Verified" ? {} : { onChange: updateInvoiceNumber })}
@@ -1048,8 +1126,8 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                 <InvoiceField
                   label="Invoice date"
                   value={draft?.date ?? ""}
-                  confidence="98%"
-                  onInspect={() => inspectSource("date")}
+                  confidence={confidenceFor(selected, "invoiceDate")}
+                  onInspect={() => inspectSource("invoiceDate")}
                   {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("date", value) })}
                   onCommit={() => void commitField("date")}
                 />
@@ -1060,14 +1138,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
               <InvoiceField
                 label="Issuer"
                 value={draft?.issuer ?? ""}
-                confidence="99%"
+                confidence={confidenceFor(selected, "issuer")}
                 onInspect={() => inspectSource("issuer")}
                 {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("issuer", value) })}
                 onCommit={() => void commitField("issuer")}
               />
               <div className="field-grid">
-                <InvoiceField label="Bill-to party" value={draft?.billTo ?? ""} confidence="96%" onInspect={() => inspectSource("billTo")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("billTo", value) })} onCommit={() => void commitField("billTo")} />
-                <InvoiceField label="Currency" value={draft?.currency ?? ""} confidence="99%" onInspect={() => inspectSource("currency")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("currency", value.toUpperCase()) })} onCommit={() => void commitField("currency")} />
+                <InvoiceField label="Bill-to party" value={draft?.billTo ?? ""} confidence={confidenceFor(selected, "billTo")} onInspect={() => inspectSource("billTo")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("billTo", value) })} onCommit={() => void commitField("billTo")} />
+                <InvoiceField label="Currency" value={draft?.currency ?? ""} confidence={confidenceFor(selected, "currency")} onInspect={() => inspectSource("currency")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("currency", value.toUpperCase()) })} onCommit={() => void commitField("currency")} />
               </div>
 
               <div className="section-divider" />
@@ -1076,7 +1154,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <h3>Line items</h3>
                   <p>{selected?.lineItems?.length ?? 1} extracted {selected?.lineItems?.length === 1 ? "row" : "rows"}</p>
                 </div>
-                <button className="text-button" type="button" onClick={() => inspectSource("line")}>
+                <button className="text-button" type="button" onClick={() => inspectSource("lineItems")}>
                   <FileSearch size={14} /> Inspect source
                 </button>
               </div>
@@ -1110,9 +1188,12 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <ChevronDown size={15} />
                 </summary>
                 <div className="provenance-grid">
-                  <span>Extraction run</span><strong>run_9f3c2</strong>
-                  <span>Schema fingerprint</span><strong>5d9a…01c8</strong>
-                  <span>Last updated</span><strong>18 min ago</strong>
+                  {selected && Object.keys(selected.provenance ?? {}).length ? <>
+                    <span>Provider</span><strong>{Object.values(selected.provenance ?? {})[0]?.provider}</strong>
+                    <span>Model</span><strong>{Object.values(selected.provenance ?? {})[0]?.modelVersion}</strong>
+                    <span>Prompt version</span><strong>{Object.values(selected.provenance ?? {})[0]?.promptVersion}</strong>
+                    <span>Extracted</span><strong>{new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(Object.values(selected.provenance ?? {})[0]?.extractedAt ?? ""))}</strong>
+                  </> : <><span>Source details</span><strong>Not recorded for this invoice</strong></>}
                 </div>
               </details>
             </div>
@@ -1120,7 +1201,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
               <div className="state-overlay">
                 <div className={`state-symbol processing-symbol ${selected.intakeStage === "QUEUED_FOR_SCAN" ? "queued-symbol" : ""}`}>{selected.intakeStage === "PROCESSING_FAILED" ? <AlertTriangle size={24} /> : selected.intakeStage === "QUEUED_FOR_SCAN" ? <FileSearch size={24} /> : <RefreshCw size={24} />}</div>
                 <h3>{selected.intakeStage === "PROCESSING_FAILED" ? "Invoice details could not be read" : selected.intakeStage === "EXTRACTING" ? "Reading invoice details" : selected.intakeStage === "ASSEMBLING" ? "Preparing invoice for review" : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Processing is taking longer than usual" : "Waiting to process your invoice" : selected.intakeStage ? "Checking file safety" : "Reading invoice details"}</h3>
-                <p>{selected.intakeStage === "PROCESSING_FAILED" ? "The file passed its safety check, but invoice extraction failed after retrying. Upload the invoice again or contact your workspace administrator." : selected.intakeStage === "EXTRACTING" || selected.intakeStage === "ASSEMBLING" ? "You can leave this page. We will continue processing and add the invoice to your review queue when it is ready." : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Your file is safely uploaded. You can leave this page and check back later. If it remains here, contact your workspace administrator." : "Your file is safely uploaded and next in line. This usually starts within a minute, and you do not need to keep this page open." : selected.intakeStage ? "We are checking the uploaded file before reading its invoice details." : "You can leave this page while we prepare the invoice for review."}</p>
+                <p>{selected.intakeStage === "PROCESSING_FAILED" ? selected.blocker && selected.blocker !== "Processing failed" ? selected.blocker : "The file passed its safety check, but invoice extraction failed after retrying. Upload the invoice again or contact your workspace administrator." : selected.intakeStage === "EXTRACTING" || selected.intakeStage === "ASSEMBLING" ? "You can leave this page. We will continue processing and add the invoice to your review queue when it is ready." : selected.intakeStage === "QUEUED_FOR_SCAN" ? scanQueueStalled ? "Your file is safely uploaded. You can leave this page and check back later. If it remains here, contact your workspace administrator." : "Your file is safely uploaded and next in line. This usually starts within a minute, and you do not need to keep this page open." : selected.intakeStage ? "We are checking the uploaded file before reading its invoice details." : "You can leave this page while we prepare the invoice for review."}</p>
                 {scanQueueStalled ? <div className="processing-warning" role="status"><Info size={16} /><span>Only cancel if you uploaded the wrong file or no longer need it processed.</span></div> : null}
                 <ol className="stage-list">
                   <li className="done"><Check size={14} /> Upload complete</li>
@@ -1150,6 +1231,22 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={() => setShowApprove(false)}>Cancel</button>
               <button className="approve-button" type="button" disabled={commandPending} onClick={() => void approveInvoice()}><Check size={17} /> {commandPending ? "Approving..." : "Approve invoice"}</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {dismissItem ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setDismissItem(null)}>
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="dismiss-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-icon danger"><Trash2 size={22} /></div>
+            <h2 id="dismiss-title">Remove invoice from queue?</h2>
+            <p>{dismissItem.linked ? "This invoice is linked to a Transaction File. Unlink it first, then remove it from the queue." : "The invoice will leave the active queue. Source evidence and audit history will be retained."}</p>
+            {commandError ? <div className="modal-error" role="alert"><AlertTriangle size={16} /><span>{commandError}</span></div> : null}
+            <dl><div><dt>Invoice</dt><dd>{dismissItem.issuer}</dd></div><div><dt>Status</dt><dd>{dismissItem.status}</dd></div></dl>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setDismissItem(null)}>Keep invoice</button>
+              <button className="danger-button" type="button" disabled={commandPending || dismissItem.linked} onClick={() => void dismissQueueItem()}><Trash2 size={16} />{commandPending ? "Removing..." : "Remove from queue"}</button>
             </div>
           </section>
         </div>

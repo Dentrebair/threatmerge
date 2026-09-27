@@ -286,7 +286,7 @@ describe("database foundation", () => {
     await db.exec("reset role");
     await db.exec(`update processing_jobs set status = 'SUCCEEDED' where id = '${receipt.rows[0]!.processing_job_id}'`);
     await authenticate(db, ids.userA);
-    await expect(db.query(`select cancel_manual_intake_scan('${ids.tenantA}', '${receipt.rows[0]!.ingestion_event_id}', '${ids.userA}')`)).rejects.toThrow(/no longer/);
+    await expect(db.query(`select cancel_manual_intake_scan('${ids.tenantA}', '${receipt.rows[0]!.ingestion_event_id}', '${ids.userA}')`)).rejects.toThrow(/already finished/);
   });
 
   it("claims and safely completes a scan before enqueueing extraction", async () => {
@@ -326,6 +326,22 @@ describe("database foundation", () => {
     expect(failed.rows[0]?.status).toBe("RETRY_SCHEDULED");
   });
 
+  it("rejects a non-invoice permanently and exposes the reason to the intake queue", async () => {
+    await authenticate(db, ids.userA);
+    const receipt = await db.query<{ evidence_artifact_id: string }>(`select evidence_artifact_id from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/not-invoice/garden.png', 'image/png', 100, '${"8".repeat(64)}', 'not-invoice', '${ids.userA}')`);
+    await db.exec("reset role; set role service_role");
+    const scan = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('scan', array['SCAN_EVIDENCE'], 1)`);
+    await db.query(`select complete_evidence_scan('${scan.rows[0]!.id}', '${scan.rows[0]!.lock_token}', true, null)`);
+    const extraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    const failure = await db.query<{ status: string }>(`select fail_processing_job('${extraction.rows[0]!.id}', '${extraction.rows[0]!.lock_token}', 'NOT_AN_INVOICE')::text as status`);
+    expect(failure.rows[0]?.status).toBe("FAILED");
+    await db.exec("reset role");
+    expect((await db.query("select id from processing_jobs where job_type = 'ASSEMBLE_INVOICE'")).rows).toHaveLength(0);
+    await authenticate(db, ids.userA);
+    const queue = await db.query<{ processing_status: string; failure_reason: string }>(`select processing_status::text, failure_reason from list_manual_intake_pipeline('${ids.tenantA}') where evidence_artifact_id = '${receipt.rows[0]!.evidence_artifact_id}'`);
+    expect(queue.rows[0]).toEqual({ processing_status: "FAILED", failure_reason: "NOT_AN_INVOICE" });
+  });
+
   it("persists provenance observations and queues assembly only after safe extraction", async () => {
     await authenticate(db, ids.userA);
     await db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/extract/invoice.pdf', 'application/pdf', 100, '${"5".repeat(64)}', 'extract', '${ids.userA}')`);
@@ -362,6 +378,47 @@ describe("database foundation", () => {
     const invoice = await db.query<{ lifecycle: string; linkage_status: string; total: string }>(`select lifecycle, linkage_status, total::text from invoice_candidates where id = '${result.rows[0]!.invoice_id}'`);
     expect(invoice.rows[0]).toEqual({ lifecycle: "INCOMPLETE_DRAFT", linkage_status: "UNLINKED", total: "486.0000" });
     expect((await db.query(`select id from work_items where record_id = '${result.rows[0]!.invoice_id}' and blocker_code = 'MISSING:invoiceNumber'`)).rows).toHaveLength(1);
+  });
+
+  it("lets reviewers complete partial invoices and routes them only after all blockers are resolved", async () => {
+    await db.exec(`
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, schema_fingerprint)
+        values ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'INCOMPLETE_DRAFT', 'schema');
+      insert into work_items (tenant_id, record_type, record_id, kind, blocker_code) values
+        ('${ids.tenantA}', 'INVOICE', '${ids.invoiceA}', 'COMPLETE_REQUIRED_FIELD', 'MISSING:invoiceNumber'),
+        ('${ids.tenantA}', 'INVOICE', '${ids.invoiceA}', 'COMPLETE_REQUIRED_FIELD', 'MISSING:issuer');
+    `);
+    await authenticate(db, ids.userA);
+    const first = await db.query<{ version: number }>(`select record_invoice_field_value('${ids.invoiceA}', 1, 'invoiceNumber', '"INV-MANUAL-1"'::jsonb, '${ids.userA}')::int as version`);
+    expect(first.rows[0]?.version).toBe(2);
+    expect((await db.query<{ lifecycle: string }>(`select lifecycle from invoice_candidates where id = '${ids.invoiceA}'`)).rows[0]?.lifecycle).toBe("INCOMPLETE_DRAFT");
+    const second = await db.query<{ version: number }>(`select record_invoice_field_value('${ids.invoiceA}', 2, 'issuer', '"Manual Vendor"'::jsonb, '${ids.userA}')::int as version`);
+    expect(second.rows[0]?.version).toBe(3);
+    await db.exec("reset role");
+    const invoice = await db.query<{ lifecycle: string; source_invoice_number: string; issuer: string }>(`
+      select invoice.lifecycle, invoice.source_invoice_number, issuer.legal_name as issuer
+      from invoice_candidates invoice join issuers issuer on issuer.id = invoice.issuer_id
+      where invoice.id = '${ids.invoiceA}'`);
+    expect(invoice.rows[0]).toEqual({ lifecycle: "READY_FOR_VERIFICATION", source_invoice_number: "INV-MANUAL-1", issuer: "Manual Vendor" });
+    expect((await db.query(`select id from work_items where record_id = '${ids.invoiceA}' and status = 'OPEN'`)).rows).toHaveLength(0);
+    expect((await db.query(`select id from processing_jobs where aggregate_id = '${ids.invoiceA}' and job_type = 'ROUTE_INVOICE_APPROVAL' and status = 'QUEUED'`)).rows).toHaveLength(1);
+  });
+
+  it("blocks inconsistent extracted totals and clears the blocker after correction", async () => {
+    await db.exec(`
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, schema_fingerprint)
+        values ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'INCOMPLETE_DRAFT', 'schema');
+      insert into invoice_field_values (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method) values
+        ('${ids.tenantA}', '${ids.invoiceA}', 'subtotal', '100', 'EXTRACTED'),
+        ('${ids.tenantA}', '${ids.invoiceA}', 'tax', '18', 'EXTRACTED'),
+        ('${ids.tenantA}', '${ids.invoiceA}', 'total', '120', 'EXTRACTED');
+    `);
+    expect((await db.query(`select id from work_items where record_id = '${ids.invoiceA}' and blocker_code = 'INVALID:financialConsistency' and status = 'OPEN'`)).rows).toHaveLength(1);
+    await authenticate(db, ids.userA);
+    await db.query(`select record_invoice_field_value('${ids.invoiceA}', 1, 'total', '"118.00"'::jsonb, '${ids.userA}')`);
+    await db.exec("reset role");
+    expect((await db.query(`select id from work_items where record_id = '${ids.invoiceA}' and blocker_code = 'INVALID:financialConsistency' and status = 'OPEN'`)).rows).toHaveLength(0);
+    expect((await db.query<{ total: string }>(`select total::text from invoice_candidates where id = '${ids.invoiceA}'`)).rows[0]?.total).toBe("118.0000");
   });
 
   it("does not create an invoice for unrecognized evidence", async () => {
@@ -943,6 +1000,41 @@ describe("database foundation", () => {
     expect(saved.rows[0]!.version).toBe(3);
     expect((await db.query(`select status, resolved_value from transaction_requirement_statuses where transaction_file_id = '${transactionId}' and requirement_key = 'property-first-owner'`)).rows).toEqual([{ status: "PRESENT", resolved_value: "Jordan Lee" }]);
     expect((await db.query(`select status from work_items where record_id = '${transactionId}' and blocker_code = 'REQUIREMENT:FIELD:property-first-owner'`)).rows).toEqual([{ status: "RESOLVED" }]);
+  });
+
+  it("replaces stale linkage suggestions and excludes lower scores and inactive files", async () => {
+    const invoiceId = "00000000-0000-4000-8000-000000000097";
+    const bestFile = "00000000-0000-4000-8000-000000000071";
+    const lowerFile = "00000000-0000-4000-8000-000000000072";
+    const cancelledFile = "00000000-0000-4000-8000-000000000073";
+    const partyId = "00000000-0000-4000-8000-000000000074";
+    await db.exec(`
+      insert into transaction_files (id, tenant_id, property_address, lifecycle, business_stage) values
+        ('${bestFile}', '${ids.tenantA}', '10 Main Road', 'ACCUMULATING', 'DOCUMENTS_PENDING'),
+        ('${lowerFile}', '${ids.tenantA}', '88 Other Street', 'ACCUMULATING', 'DOCUMENTS_PENDING'),
+        ('${cancelledFile}', '${ids.tenantA}', '10 Main Road', 'ARCHIVED', 'CANCELLED');
+      insert into transaction_parties (id, tenant_id, display_name, normalized_name, party_kind)
+        values ('${partyId}', '${ids.tenantA}', 'Alpha LLC 10 Main Road', 'alpha llc 10 main road', 'ORGANIZATION');
+      insert into transaction_party_assignments (tenant_id, transaction_file_id, party_id, role) values
+        ('${ids.tenantA}', '${bestFile}', '${partyId}', 'BUYER'),
+        ('${ids.tenantA}', '${lowerFile}', '${partyId}', 'BUYER'),
+        ('${ids.tenantA}', '${cancelledFile}', '${partyId}', 'BUYER');
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, schema_fingerprint)
+        values ('${invoiceId}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'schema');
+      insert into invoice_field_values (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method)
+        values ('${ids.tenantA}', '${invoiceId}', 'billTo', '"Alpha LLC 10 Main Road"'::jsonb, 'EXTRACTED');
+    `);
+
+    expect((await db.query(`select transaction_file_id, score::text, resolver_version from transaction_linkage_proposals where invoice_candidate_id = '${invoiceId}' and status = 'PROPOSED'`)).rows)
+      .toEqual([{ transaction_file_id: bestFile, score: "0.9000", resolver_version: "transaction-linkage-v2" }]);
+    expect((await db.query(`select linkage_status::text from invoice_candidates where id = '${invoiceId}'`)).rows)
+      .toEqual([{ linkage_status: "AMBIGUOUS" }]);
+
+    await db.exec(`update invoice_field_values set resolved_value = '"No matching party"'::jsonb where invoice_candidate_id = '${invoiceId}' and field_name = 'billTo'`);
+    expect((await db.query(`select status from transaction_linkage_proposals where invoice_candidate_id = '${invoiceId}' order by created_at`)).rows)
+      .toEqual([{ status: "SUPERSEDED" }]);
+    expect((await db.query(`select linkage_status::text from invoice_candidates where id = '${invoiceId}'`)).rows)
+      .toEqual([{ linkage_status: "UNLINKED" }]);
   });
 
   it("maps legacy Transaction File states without changing invoice links", async () => {

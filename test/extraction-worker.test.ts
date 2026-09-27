@@ -35,11 +35,37 @@ describe("extraction worker", () => {
     expect(() => validateExtractionResult({ ...validResult, observations: Array.from({ length: 201 }, () => validResult.observations[0]) })).toThrow("observation count");
   });
 
+  it("rejects unsupported fields and malformed field values", () => {
+    expect(() => validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], fieldName: "secretInstructions" }] })).toThrow("unsupported field");
+    expect(() => validateExtractionResult({ ...validResult, observations: [{ fieldName: "invoiceDate", value: "2026-02-31", sourceLocation: { page: 1 }, confidence: 0.9 }] })).toThrow("invalid invoiceDate");
+    expect(() => validateExtractionResult({ ...validResult, observations: [{ fieldName: "total", value: "USD 12.00", sourceLocation: { page: 1 }, confidence: 0.9 }] })).toThrow("invalid total");
+  });
+
+  it("requires a real source page and validates optional normalized boxes", () => {
+    expect(() => validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 0 } }] })).toThrow("invalid source page");
+    expect(() => validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 1, boundingBox: { x: 0.9, y: 0.1, width: 0.2, height: 0.1 } } }] })).toThrow("invalid source bounding box");
+    expect(validateExtractionResult({ ...validResult, observations: [{ ...validResult.observations[0], sourceLocation: { page: 1, boundingBox: { x: 0.1, y: 0.1, width: 0.2, height: 0.1 } } }] }).observations[0]?.sourceLocation).toMatchObject({ page: 1 });
+  });
+
   it("records provider outages as retryable failures", async () => {
     const store = backend([job]);
     const extractor: DocumentExtractor = { extract: vi.fn().mockRejectedValue(new Error("extractor unavailable (503)")) };
     await processExtractionBatch(store, extractor, "worker-1");
     expect(store.fail).toHaveBeenCalledWith(job, "EXTRACTOR_UNAVAILABLE");
+  });
+
+  it("records non-invoice validation as a terminal rejection code", async () => {
+    const store = backend([job]);
+    const extractor: DocumentExtractor = { extract: vi.fn().mockRejectedValue(new Error("NOT_AN_INVOICE")) };
+    await processExtractionBatch(store, extractor, "worker-1");
+    expect(store.fail).toHaveBeenCalledWith(job, "NOT_AN_INVOICE");
+  });
+
+  it("records multiple invoices as a terminal user-action code", async () => {
+    const store = backend([job]);
+    const extractor: DocumentExtractor = { extract: vi.fn().mockRejectedValue(new Error("MULTIPLE_INVOICES")) };
+    await processExtractionBatch(store, extractor, "worker-1");
+    expect(store.fail).toHaveBeenCalledWith(job, "MULTIPLE_INVOICES");
   });
 
   it("treats extractor timeouts as provider outages", async () => {

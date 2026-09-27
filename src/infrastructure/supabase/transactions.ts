@@ -16,6 +16,7 @@ export type TransactionPaymentStatus = "UNPAID" | "SCHEDULED" | "PARTIALLY_PAID"
 export interface TransactionInvoice { id: string; version: number; vendor: string; invoiceNumber: string | null; currency: string; total: number | null; dueDate: string | null; approvalStatus: string; paymentStatus: TransactionPaymentStatus; paidAmount: number; outstandingAmount: number; scheduledFor: string | null; paymentNote: string | null; contextReviewRequired: boolean }
 export type TransactionIssueSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export interface TransactionIssue { id: string; title: string; category: string; severity: TransactionIssueSeverity; blocking: boolean; status: "OPEN" | "WAITING_FOR_EVIDENCE" | "RESOLVED" | "DISMISSED"; ownerUserId: string | null; dueDate: string | null; resolution: string | null; source: "MANUAL" | "GENERATED"; createdAt: string; resolvedAt: string | null }
+export interface TransactionClosingBlocker { code: string; message: string }
 export interface TransactionFile {
   id: string;
   externalReference: string;
@@ -25,6 +26,7 @@ export interface TransactionFile {
   ownerUserId?: string;
   primaryParty?: { id: string; name: string; role: TransactionPartyRole };
   office?: string;
+  baseCurrency?: string;
   keyDates?: Record<string, string>;
   lifecycle: TransactionLifecycle;
   businessStage?: TransactionStage;
@@ -39,6 +41,7 @@ export interface TransactionFile {
   pendingDocumentUploads?: TransactionPendingDocumentUpload[];
   invoices?: TransactionInvoice[];
   issues?: TransactionIssue[];
+  closingBlockers?: TransactionClosingBlocker[];
   requirements: TransactionRequirement[];
 }
 export interface LinkageProposalReason { label: string }
@@ -53,6 +56,8 @@ export interface TransactionLinkageProposal {
   score: number;
   reasons: LinkageProposalReason[];
   status: "PROPOSED" | "ACCEPTED";
+  invoiceVersion?: number;
+  invoiceLabel?: string;
 }
 export interface TransactionTypeOption { id: string; code: string; name: string }
 export interface TransactionOwnerOption { userId: string; role: "TENANT_ADMIN" | "REVIEWER" | "VIEWER"; label: string }
@@ -93,7 +98,7 @@ function humanRole(role: string): string { return role === "TENANT_ADMIN" ? "Adm
 export async function listTransactionFiles(tenantId: string): Promise<TransactionFile[]> {
   if (!supabase) throw new Error("Supabase is not configured");
   const { data, error } = await supabase.from("transaction_files")
-    .select("id, external_reference, property_address, transaction_type, office, key_dates, lifecycle, business_stage, version, updated_at, transaction_requirement_statuses(requirement_kind,requirement_key,status,confidence,resolved_value,stage_gate,requirement_source,template_mandated)")
+    .select("id, external_reference, property_address, transaction_type, office, base_currency, key_dates, lifecycle, business_stage, version, updated_at, transaction_requirement_statuses(requirement_kind,requirement_key,status,confidence,resolved_value,stage_gate,requirement_source,template_mandated)")
     .eq("tenant_id", tenantId).order("updated_at", { ascending: false });
   if (error) throw new Error(`Unable to load Transaction Files: ${error.message}`);
   const { data: healthData, error: healthError } = await supabase.rpc("list_transaction_health", { target_tenant: tenantId });
@@ -102,7 +107,7 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
   const { data: contextData, error: contextError } = await supabase.rpc("list_transaction_workspace_context", { target_tenant: tenantId });
   if (contextError) throw new Error(`Unable to load Transaction File context: ${contextError.message}`);
   const context = new Map((contextData as Array<{ transaction_file_id: string; transaction_type_id: string | null; transaction_type_name: string | null; owner_user_id: string | null; primary_party_id: string | null; primary_party_name: string | null; primary_party_role: TransactionPartyRole }>).map((item) => [item.transaction_file_id, item]));
-  const [{ data: partyData, error: partyError }, { data: dateData, error: dateError }, { data: financialData, error: financialError }, { data: customDefinitionData, error: customDefinitionError }, { data: customValueData, error: customValueError }, { data: documentData, error: documentError }, { data: documentHistoryData, error: documentHistoryError }, { data: pendingDocumentData, error: pendingDocumentError }, { data: invoiceData, error: invoiceError }, { data: issueData, error: issueError }] = await Promise.all([
+  const [{ data: partyData, error: partyError }, { data: dateData, error: dateError }, { data: financialData, error: financialError }, { data: customDefinitionData, error: customDefinitionError }, { data: customValueData, error: customValueError }, { data: documentData, error: documentError }, { data: documentHistoryData, error: documentHistoryError }, { data: pendingDocumentData, error: pendingDocumentError }, { data: invoiceData, error: invoiceError }, { data: issueData, error: issueError }, { data: closingData, error: closingError }] = await Promise.all([
     supabase.from("transaction_party_assignments").select("transaction_file_id,role,is_primary,transaction_parties!inner(id,display_name,party_kind)").eq("tenant_id", tenantId),
     supabase.from("transaction_important_dates").select("id,transaction_file_id,date_kind,date_value,timestamp_value,timezone").eq("tenant_id", tenantId).order("date_kind"),
     supabase.from("transaction_financial_entries").select("id,transaction_file_id,financial_kind,label,amount,currency").eq("tenant_id", tenantId).order("financial_kind"),
@@ -113,6 +118,7 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
     supabase.rpc("list_transaction_document_uploads", { target_tenant: tenantId }),
     supabase.rpc("list_transaction_invoices", { target_tenant: tenantId }),
     supabase.rpc("list_transaction_issues", { target_tenant: tenantId }),
+    supabase.rpc("list_transaction_closing_readiness", { target_tenant: tenantId }),
   ]);
   if (partyError) throw new Error(`Unable to load transaction parties: ${partyError.message}`);
   if (dateError) throw new Error(`Unable to load important dates: ${dateError.message}`);
@@ -127,6 +133,8 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
   if (invoiceError && !invoiceProjectionUnavailable) throw new Error(`Unable to load linked invoices: ${invoiceError.message}`);
   const issueProjectionUnavailable = issueError?.message.includes("list_transaction_issues") && issueError.message.includes("schema cache");
   if (issueError && !issueProjectionUnavailable) throw new Error(`Unable to load Transaction File issues: ${issueError.message}`);
+  const closingProjectionUnavailable = closingError?.message.includes("list_transaction_closing_readiness") && closingError.message.includes("schema cache");
+  if (closingError && !closingProjectionUnavailable) throw new Error(`Unable to load closing readiness: ${closingError.message}`);
   const { data: contextReviewData, error: contextReviewError } = await supabase.from("work_items").select("record_id")
     .eq("tenant_id", tenantId).eq("record_type", "INVOICE").eq("kind", "REVIEW_TRANSACTION_CONTEXT").in("status", ["OPEN", "WAITING_FOR_EVIDENCE"]);
   if (contextReviewError) throw new Error(`Unable to load invoice context reviews: ${contextReviewError.message}`);
@@ -141,6 +149,7 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
   const pendingDocuments = groupByTransaction(pendingDocumentData as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
   const linkedInvoices = groupByTransaction((invoiceData ?? []) as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
   const issues = groupByTransaction((issueData ?? []) as Array<Record<string, unknown>>, (item) => item.transaction_file_id as string);
+  const closingReadiness = new Map(((closingData ?? []) as Array<{ transaction_file_id: string; blockers: TransactionClosingBlocker[] }>).map((item) => [item.transaction_file_id, item.blockers]));
   return data.map((row) => ({
     id: row.id as string,
     externalReference: (row.external_reference as string | null) ?? "",
@@ -150,6 +159,7 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
     ...(context.get(row.id as string)?.owner_user_id ? { ownerUserId: context.get(row.id as string)!.owner_user_id! } : {}),
     ...(context.get(row.id as string)?.primary_party_id ? { primaryParty: { id: context.get(row.id as string)!.primary_party_id!, name: context.get(row.id as string)!.primary_party_name!, role: context.get(row.id as string)!.primary_party_role } } : {}),
     office: (row.office as string | null) ?? "",
+    ...(row.base_currency ? { baseCurrency: row.base_currency as string } : {}),
     keyDates: (row.key_dates as Record<string, string> | null) ?? {},
     lifecycle: row.lifecycle as TransactionLifecycle,
     businessStage: row.business_stage as TransactionStage,
@@ -167,6 +177,7 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
     pendingDocumentUploads: (pendingDocuments.get(row.id as string) ?? []).map((item) => ({ id: item.intent_id as string, ingestionEventId: item.ingestion_event_id as string, requirementKey: item.requirement_key as string | null, documentName: item.document_name as string, status: item.intent_status as TransactionPendingDocumentUpload["status"], safetyStatus: item.safety_status as TransactionPendingDocumentUpload["safetyStatus"], processingStatus: item.processing_status as TransactionPendingDocumentUpload["processingStatus"], failureReason: item.failure_reason as string | null, createdAt: item.created_at as string })),
     invoices: (linkedInvoices.get(row.id as string) ?? []).map((item) => ({ id: item.invoice_candidate_id as string, version: Number(item.invoice_version ?? 0), vendor: item.vendor as string, invoiceNumber: item.invoice_number as string | null, currency: item.currency as string, total: item.total === null ? null : Number(item.total), dueDate: item.due_date as string | null, approvalStatus: item.approval_status as string, paymentStatus: item.payment_status as TransactionPaymentStatus, paidAmount: Number(item.paid_amount), outstandingAmount: Number(item.outstanding_amount), scheduledFor: item.scheduled_for as string | null, paymentNote: item.payment_note as string | null, contextReviewRequired: contextReviewInvoices.has(item.invoice_candidate_id as string) })),
     issues: (issues.get(row.id as string) ?? []).map((item) => ({ id: item.issue_id as string, title: item.title as string, category: item.category as string, severity: item.severity as TransactionIssueSeverity, blocking: item.is_blocking as boolean, status: item.status as TransactionIssue["status"], ownerUserId: item.owner_user_id as string | null, dueDate: item.due_date as string | null, resolution: item.resolution as string | null, source: item.source as TransactionIssue["source"], createdAt: item.created_at as string, resolvedAt: item.resolved_at as string | null })),
+    closingBlockers: closingReadiness.get(row.id as string) ?? [],
     requirements: (row.transaction_requirement_statuses as Array<{ requirement_kind: "ARTIFACT" | "FIELD"; requirement_key: string; status: RequirementStatus; confidence: number | null; resolved_value: string | null; stage_gate: "BEFORE_REVIEW" | "BEFORE_APPROVAL" | "BEFORE_CLOSING"; requirement_source: "TEMPLATE" | "TRANSACTION"; template_mandated: boolean }>).map((item) => ({ kind: item.requirement_kind, key: item.requirement_key, status: item.status, confidence: item.confidence === null ? null : Number(item.confidence), ...(item.resolved_value ? { value: item.resolved_value } : {}), stageGate: item.stage_gate, source: item.requirement_source, templateMandated: item.template_mandated })),
   }));
 }
@@ -174,11 +185,12 @@ export async function listTransactionFiles(tenantId: string): Promise<Transactio
 export async function listTransactionLinkageProposals(tenantId: string): Promise<TransactionLinkageProposal[]> {
   if (!supabase) throw new Error("Supabase is not configured");
   const { data, error } = await supabase.from("transaction_linkage_proposals")
-    .select("id, invoice_candidate_id, transaction_file_id, score, reasons, status, transaction_files!inner(external_reference,property_address,lifecycle,version)")
+    .select("id, invoice_candidate_id, transaction_file_id, score, reasons, status, transaction_files!inner(external_reference,property_address,lifecycle,version),invoice_candidates!inner(version,source_invoice_number,official_invoice_number,issuers!inner(legal_name))")
     .eq("tenant_id", tenantId).in("status", ["PROPOSED", "ACCEPTED"]).order("score", { ascending: false });
   if (error) throw new Error(`Unable to load Transaction File suggestions: ${error.message}`);
   return data.map((row) => {
     const transaction = row.transaction_files as unknown as { external_reference: string | null; property_address: string; lifecycle: TransactionLifecycle; version: number };
+    const invoice = row.invoice_candidates as unknown as { version: number; source_invoice_number: string | null; official_invoice_number: string | null; issuers: { legal_name: string } };
     const reasons = Array.isArray(row.reasons) ? row.reasons : [];
     return {
       id: row.id as string,
@@ -191,6 +203,8 @@ export async function listTransactionLinkageProposals(tenantId: string): Promise
       score: Number(row.score),
       reasons: reasons.filter((reason): reason is LinkageProposalReason => typeof reason === "object" && reason !== null && typeof (reason as { label?: unknown }).label === "string"),
       status: row.status as "PROPOSED" | "ACCEPTED",
+      invoiceVersion: invoice.version,
+      invoiceLabel: `${invoice.issuers.legal_name}${invoice.source_invoice_number || invoice.official_invoice_number ? ` · ${invoice.source_invoice_number || invoice.official_invoice_number}` : ""}`,
     };
   });
 }

@@ -18,6 +18,7 @@ export interface IntakeQueueItem {
   quarantineReason: string | null;
   processingStage: "SCAN_EVIDENCE" | "EXTRACT_EVIDENCE" | "ASSEMBLE_INVOICE" | null;
   processingStatus: "QUEUED" | "RUNNING" | "RETRY_SCHEDULED" | "SUCCEEDED" | "FAILED" | "CANCEL_REQUESTED" | "CANCELLED" | null;
+  failureReason: string | null;
   receivedAt: string;
 }
 
@@ -30,6 +31,16 @@ export async function cancelIntakeScan(input: { tenantId: string; ingestionEvent
   });
   if (error) throw new Error(`Unable to cancel scan: ${error.message}`);
   return data as "CANCEL_REQUESTED" | "CANCELLED";
+}
+
+export async function dismissIntakeReceipt(input: { tenantId: string; ingestionEventId: string; actorId: string }): Promise<void> {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { error } = await supabase.rpc("dismiss_manual_intake_receipt", {
+    target_tenant: input.tenantId,
+    target_ingestion_event: input.ingestionEventId,
+    actor: input.actorId,
+  });
+  if (error) throw new Error(`Unable to remove upload: ${error.message}`);
 }
 
 export async function listIntakeReceipts(tenantId: string): Promise<IntakeQueueItem[]> {
@@ -45,6 +56,7 @@ export async function listIntakeReceipts(tenantId: string): Promise<IntakeQueueI
     quarantineReason: row.quarantine_reason as string | null,
     processingStage: row.processing_stage as IntakeQueueItem["processingStage"],
     processingStatus: row.processing_status as IntakeQueueItem["processingStatus"],
+    failureReason: row.failure_reason as string | null,
     receivedAt: row.received_at as string,
   }));
 }

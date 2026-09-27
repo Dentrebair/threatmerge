@@ -38,12 +38,41 @@ This document records capacity and reliability work that is intentionally deferr
 
 ### Current phase decision
 
-- Production malware-scanner integration is deferred to Sprint 9 and must not block the current workflow-development phase.
+- Production malware-scanner integration is deferred to the next product phase and must not block the current workflow-development phase.
 - The evidence worker and scanner interface are retained as dormant server-side foundation code; the browser does not invoke them.
 - The worker is disabled by default through `MALWARE_SCANNING_ENABLED=false`. It may only be enabled after an approved scanner is configured and end-to-end quarantine tests pass.
 - Local workflow testing may use the explicitly enabled signature validator through `npm run worker:evidence:dev`; it is not malware protection and is blocked in production.
 - Until then, uploaded evidence remains pending and must not be represented as safe, verified, or ready for extraction.
 - The intended implementation branch when Git is initialized is `feature/production-malware-scanner`.
+
+## Additional Next-Phase Deferrals
+
+### Multi-invoice splitting
+
+- The current phase supports one invoice per upload.
+- A document classified as containing multiple invoices fails terminally with `MULTIPLE_INVOICES` and instructs the user to upload each invoice separately.
+- Automatic page-boundary detection, splitting, child-candidate creation, and multi-artifact assembly are deferred to the next phase.
+- Retries must not reinterpret this terminal rejection or create duplicate invoice candidates.
+
+### Production entity resolution
+
+- The current phase retains deterministic, tenant-scoped Transaction File suggestions and explicit reviewer decisions.
+- Embeddings, `pgvector`, hybrid semantic scoring, configurable auto-link thresholds, and automatic Transaction File population are deferred to the next phase.
+- Current suggestions must remain advisory: no ambiguous or unmatched invoice may be silently linked.
+- Existing manual links, reviewer decisions, stale-proposal replacement, tenant isolation, and audit history remain supported.
+
+### Retries and provider failures
+
+- Production-grade retry and provider-failure handling is deferred to the next phase.
+- The current bounded retries and cancellation safeguards remain in place, but they are not considered sufficient for production outage resilience.
+- Rate-limit coordination, full-jitter backoff tuning, dead-letter recovery, lease-expiry recovery, poison-input isolation, provider failover, operational alerts, and recovery runbooks remain deferred.
+- Until that work is complete, provider failures must remain visible as failed or retry-scheduled jobs and must never be reported as successful processing.
+
+### HEIC images
+
+- HEIC upload, decoding, normalization, preview generation, and extraction are deferred to the next phase.
+- The current upload picker does not advertise HEIC support, and unsupported HEIC uploads must be rejected rather than stored as processable invoices.
+- Current image support remains JPEG and PNG.
 
 ### Provider plan
 
@@ -64,4 +93,4 @@ Before enabling scanning, complete all of the following:
 
 ## Delivery Timing
 
-The 5 MB cap is an interim product constraint. Malware-scanner activation, resumable uploads, quotas, derivative generation, lifecycle cleanup, archival storage, and operational dashboards belong in the production-readiness work before scaling beyond controlled tenants.
+The 5 MB cap is an interim product constraint. Malware-scanner activation, multi-invoice splitting, production entity resolution, production retry/provider-failure hardening, resumable uploads, quotas, derivative generation, lifecycle cleanup, archival storage, and operational dashboards belong to the next-phase production-readiness work before scaling beyond controlled tenants.

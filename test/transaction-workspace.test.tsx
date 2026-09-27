@@ -12,6 +12,20 @@ afterEach(cleanup);
 const noOp = vi.fn().mockResolvedValue(undefined);
 
 describe("Transaction workspace", () => {
+  it("shows suggested invoices when opening a Transaction File directly", async () => {
+    const user = userEvent.setup();
+    const resolve = vi.fn().mockResolvedValue(undefined);
+    const transaction: TransactionFile = { id: "tx-direct", externalReference: "TX-1048", propertyAddress: "1847 Cypress Avenue", lifecycle: "ACCUMULATING", version: 3, updatedAt: "2026-09-27T00:00:00Z", requirements: [] };
+    const proposal: TransactionLinkageProposal = { id: "proposal-direct", invoiceId: "invoice-direct", invoiceVersion: 2, invoiceLabel: "Alpha Office Supplies · INV-001", transactionId: transaction.id, transactionVersion: transaction.version, propertyAddress: transaction.propertyAddress, externalReference: transaction.externalReference, lifecycle: transaction.lifecycle, score: .7, reasons: [{ label: "Bill-to party matches" }], status: "PROPOSED" };
+    render(<TransactionWorkspace transactions={[transaction]} linkageProposals={[proposal]} onClose={noOp} onCreate={noOp} onLink={noOp} onResolveProposal={resolve} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} />);
+
+    expect(screen.getByText("1 suggested invoice")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Suggested invoices" })).toBeVisible();
+    expect(screen.getByText("Alpha Office Supplies · INV-001")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Link invoice" }));
+    expect(resolve).toHaveBeenCalledWith(proposal, "ACCEPT");
+  });
+
   it("creates a Transaction File from a clear empty state", async () => {
     const user = userEvent.setup();
     const create = vi.fn().mockResolvedValue(undefined);
@@ -30,6 +44,8 @@ describe("Transaction workspace", () => {
     const upload = vi.fn().mockResolvedValue(undefined);
     render(<TransactionWorkspace transactions={[transaction]} onClose={noOp} onCreate={noOp} onLink={noOp} onRequirement={noOp} onUploadDocument={upload} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} />);
     expect(screen.getByText("1 item needs attention.")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveClass("document-missing");
+    expect(screen.getByText("Document missing")).toHaveClass("requirement-error-copy");
     expect(screen.getByRole("button", { name: "Ready for final review" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Upload document" }));
     const file = new File(["document"], "agreement.pdf", { type: "application/pdf" });
@@ -82,7 +98,7 @@ describe("Transaction workspace", () => {
     expect(screen.getByText("Property address matches")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Not a match" }));
     expect(resolve).toHaveBeenLastCalledWith(proposal, "REJECT");
-    await user.click(screen.getByRole("button", { name: "Use this file" }));
+    await user.click(screen.getByRole("button", { name: "Link invoice" }));
     expect(resolve).toHaveBeenLastCalledWith(proposal, "ACCEPT");
   });
 
@@ -90,7 +106,7 @@ describe("Transaction workspace", () => {
     const transaction: TransactionFile = { id: "tx-1", externalReference: "TX-1048", propertyAddress: "1847 Cypress Avenue", lifecycle: "DORMANT", version: 3, updatedAt: "2026-09-23T00:00:00Z", requirements: [] };
     const proposal: TransactionLinkageProposal = { id: "proposal-1", invoiceId: "invoice-1", transactionId: "tx-1", transactionVersion: 3, propertyAddress: transaction.propertyAddress, externalReference: transaction.externalReference, lifecycle: transaction.lifecycle, score: .8, reasons: [{ label: "Property address resembles source" }], status: "PROPOSED" };
     render(<TransactionWorkspace transactions={[transaction]} selectedInvoice={{ id: "invoice-1", version: 2, label: "Northstar", linked: false }} linkageProposals={[proposal]} onClose={noOp} onCreate={noOp} onLink={noOp} onResolveProposal={noOp} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} />);
-    expect(screen.getByRole("button", { name: "Use this file" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Link invoice" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Not a match" })).toBeEnabled();
   });
 
@@ -185,9 +201,9 @@ describe("Transaction workspace", () => {
     expect(addParty).toHaveBeenCalledWith(transaction, { name: "North Title Co", kind: "PERSON", role: "TITLE_ESCROW", primary: false });
     expect(await screen.findByText("Party added.")).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Add date" }));
+    await user.click(screen.getByRole("button", { name: "Set closing date" }));
     await user.selectOptions(screen.getByLabelText("Date type"), "CLOSING");
-    await user.type(screen.getByLabelText("Date", { exact: true }), "2030-06-15");
+    await user.type(screen.getByLabelText("Important date"), "2030-06-15");
     await user.click(screen.getByRole("button", { name: "Save", exact: true }));
     expect(setDate).toHaveBeenCalledWith(transaction, { kind: "CLOSING", date: "2030-06-15" });
 
@@ -195,7 +211,7 @@ describe("Transaction workspace", () => {
     await user.type(screen.getByLabelText("Label"), "Purchase price");
     await user.type(screen.getByLabelText("Amount"), "425000.50");
     await user.click(screen.getByRole("button", { name: "Save", exact: true }));
-    expect(setFinancial).toHaveBeenCalledWith(transaction, { kind: "DEAL_VALUE", label: "Purchase price", amount: 425000.5, currency: "USD" });
+    expect(setFinancial).toHaveBeenCalledWith(transaction, { kind: "DEAL_VALUE", label: "Purchase price", amount: 425000.5, currency: "INR" });
     expect(await screen.findByText("Financial entry saved.")).toBeVisible();
   });
 
@@ -317,8 +333,9 @@ describe("Transaction workspace", () => {
     await user.selectOptions(screen.getByLabelText("Payment status"), "PARTIALLY_PAID");
     await user.clear(screen.getByLabelText("Paid amount"));
     await user.type(screen.getByLabelText("Paid amount"), "40");
+    await user.type(screen.getByLabelText("Payment status reason"), "Balance due at closing");
     await user.click(screen.getByRole("button", { name: "Save payment status" }));
-    expect(updatePayment).toHaveBeenCalledWith(transaction, invoice, { status: "PARTIALLY_PAID", paidAmount: 40 });
+    expect(updatePayment).toHaveBeenCalledWith(transaction, invoice, { status: "PARTIALLY_PAID", paidAmount: 40, note: "Balance due at closing" });
     expect(await screen.findByText("Payment status updated.")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Unlink INV-1001" }));
     expect(screen.getByText(/verification history will be retained/)).toBeVisible();
@@ -376,5 +393,46 @@ describe("Transaction workspace", () => {
     await user.type(screen.getByLabelText("Reason"), "Buyer withdrew");
     await user.click(screen.getByRole("button", { name: "Cancel Transaction File" }));
     expect(cancelFile).toHaveBeenCalledWith(ready, "Buyer withdrew");
+  });
+
+  it("explains closing blockers before disabling the close action", () => {
+    const ready: TransactionFile = { id: "tx-1", externalReference: "TX-1", propertyAddress: "1 Main Street", lifecycle: "ACCUMULATING", businessStage: "READY_FOR_CLOSING", version: 5, updatedAt: "2026-09-24T00:00:00Z", requirements: [], closingBlockers: [
+      { code: "CLOSING_DATE", message: "Set the closing date before closing this file." },
+      { code: "PAYMENT", message: "Document every deferred payment before closing." },
+    ] };
+    render(<TransactionWorkspace transactions={[ready]} onClose={noOp} onCreate={noOp} onLink={noOp} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} onCloseFile={noOp} />);
+    const blockers = screen.getByRole("alert", { name: "Closing blockers" });
+    expect(blockers).toHaveTextContent("Set the closing date before closing this file.");
+    expect(blockers).toHaveTextContent("Document every deferred payment before closing.");
+    expect(screen.getByRole("button", { name: "Close Transaction File" })).toBeDisabled();
+  });
+
+  it("shows base-currency outstanding without combining foreign balances", () => {
+    const transaction: TransactionFile = { id: "tx-1", externalReference: "TX-1", propertyAddress: "1 Main Street", lifecycle: "ACCUMULATING", businessStage: "DOCUMENTS_PENDING", baseCurrency: "INR", version: 5, updatedAt: "2026-09-24T00:00:00Z", requirements: [], health: { completionPercent: 100, missingDocuments: 0, invoiceConflicts: 0, closingDays: 3, outstandingByCurrency: { INR: 420000, USD: 200 }, calculationVersion: "requirements-payments-v2" } };
+    render(<TransactionWorkspace transactions={[transaction]} onClose={noOp} onCreate={noOp} onLink={noOp} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} />);
+    expect(screen.getByText(/₹420,000 \+ 1 foreign/)).toBeVisible();
+    expect(screen.getByText("INR outstanding")).toBeVisible();
+  });
+
+  it("offers supported financial currencies with INR as the default", async () => {
+    const user = userEvent.setup();
+    const transaction: TransactionFile = { id: "tx-1", externalReference: "TX-1", propertyAddress: "1 Main Street", lifecycle: "ACCUMULATING", businessStage: "DOCUMENTS_PENDING", version: 1, updatedAt: "2026-09-24T00:00:00Z", requirements: [] };
+    render(<TransactionWorkspace transactions={[transaction]} onClose={noOp} onCreate={noOp} onLink={noOp} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} onSetFinancial={noOp} />);
+    await user.click(screen.getByRole("button", { name: "Add financial" }));
+    const currency = screen.getByLabelText("Financial currency") as HTMLSelectElement;
+    expect(currency.value).toBe("INR");
+    expect(Array.from(currency.options).map((option) => option.value)).toEqual(["INR", "USD", "EUR"]);
+  });
+
+  it("makes a missing closing date directly actionable", async () => {
+    const user = userEvent.setup();
+    const setDate = vi.fn().mockResolvedValue(undefined);
+    const transaction: TransactionFile = { id: "tx-1", externalReference: "TX-1", propertyAddress: "1 Main Street", lifecycle: "ACCUMULATING", businessStage: "READY_FOR_CLOSING", version: 2, updatedAt: "2026-09-24T00:00:00Z", requirements: [], importantDates: [{ id: "agreement", kind: "AGREEMENT", date: "2026-09-01", timestamp: null, timezone: null }] };
+    render(<TransactionWorkspace transactions={[transaction]} onClose={noOp} onCreate={noOp} onLink={noOp} onRequirement={noOp} onEvaluate={noOp} onApprove={noOp} onReactivate={noOp} onSetDate={setDate} />);
+    await user.click(screen.getByRole("button", { name: "Set closing date" }));
+    expect(screen.getByLabelText("Date type")).toHaveValue("CLOSING");
+    await user.type(screen.getByLabelText("Important date"), "2026-10-15");
+    await user.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(setDate).toHaveBeenCalledWith(transaction, { kind: "CLOSING", date: "2026-10-15" });
   });
 });

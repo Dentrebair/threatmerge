@@ -10,6 +10,63 @@ import { EmptyWorkspace } from "../src/AuthenticatedApp.js";
 afterEach(cleanup);
 
 describe("Sprint 1 review flow", () => {
+  it("removes an unlinked invoice from the queue after confirmation", async () => {
+    const user = userEvent.setup();
+    const dismiss = vi.fn().mockResolvedValue(undefined);
+    const invoice: QueueItem = {
+      id: "invoice-dismiss",
+      issuer: "Alpha Office Supplies",
+      reference: "Standalone invoice",
+      amount: "$1,180.00",
+      age: "Today",
+      status: "Needs attention",
+      origin: "Captured",
+      linked: false,
+      description: "Printer paper",
+      assignedToMe: true,
+      databaseVersion: 3,
+    };
+
+    render(<App initialQueueItems={[invoice]} onDismissInvoice={dismiss} />);
+    await user.click(screen.getByRole("button", { name: "Remove Alpha Office Supplies from queue" }));
+    expect(screen.getByRole("dialog", { name: "Remove invoice from queue?" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Remove from queue" }));
+
+    expect(dismiss).toHaveBeenCalledWith({ invoiceId: "invoice-dismiss", expectedVersion: 3 });
+    expect(screen.queryByText("Alpha Office Supplies")).not.toBeInTheDocument();
+    expect(screen.getByText("No matching work")).toBeVisible();
+  });
+
+  it("keeps the removal dialog open when the server rejects the command", async () => {
+    const user = userEvent.setup();
+    const invoice: QueueItem = {
+      id: "invoice-dismiss-error", issuer: "Alpha Office Supplies", reference: "Standalone invoice", amount: "$1,180.00", age: "Today",
+      status: "Needs attention", origin: "Captured", linked: false, description: "Printer paper", assignedToMe: true, databaseVersion: 3,
+    };
+    render(<App initialQueueItems={[invoice]} onDismissInvoice={vi.fn().mockRejectedValue(new Error("Dismissal command is unavailable. Run migration 049."))} />);
+    await user.click(screen.getByRole("button", { name: "Remove Alpha Office Supplies from queue" }));
+    await user.click(screen.getByRole("button", { name: "Remove from queue" }));
+
+    expect(screen.getByRole("dialog", { name: "Remove invoice from queue?" })).toBeVisible();
+    expect(screen.getByText(/Run migration 049/)).toBeVisible();
+  });
+
+  it("dismisses a quarantined upload instead of trying to cancel its completed scan", async () => {
+    const user = userEvent.setup();
+    const dismiss = vi.fn().mockResolvedValue(undefined);
+    const receipt: QueueItem = {
+      id: "intake-failed", issuer: "shirt.jpg", reference: "Upload requires replacement", amount: "—", age: "Today",
+      status: "Quarantined", origin: "Captured", linked: false, blocker: "This file is not an invoice.", description: "Recognition pending",
+      assignedToMe: true, ingestionEventId: "receipt-1", intakeStage: "PROCESSING_FAILED",
+    };
+    render(<App initialQueueItems={[receipt]} onCancelIntake={vi.fn()} onDismissIntake={dismiss} />);
+    await user.click(screen.getByRole("button", { name: "Remove shirt.jpg from queue" }));
+    await user.click(screen.getByRole("button", { name: "Remove from queue" }));
+
+    expect(dismiss).toHaveBeenCalledWith("receipt-1");
+    expect(screen.queryByText("shirt.jpg")).not.toBeInTheDocument();
+  });
+
   it("blocks approval until the required invoice number is resolved", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -97,7 +154,7 @@ describe("Sprint 1 review flow", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.type(screen.getByPlaceholderText("Search work"), "Apex");
+    await user.type(screen.getByPlaceholderText("Search assigned work"), "Apex");
     expect(screen.getByText("Apex Title Services")).toBeVisible();
     expect(screen.queryByText("Stonebridge Appraisal")).not.toBeInTheDocument();
 
@@ -126,6 +183,29 @@ describe("Sprint 1 review flow", () => {
     expect(screen.getByRole("button", { name: /Replace file/ })).toBeVisible();
   });
 
+  it("shows corrective copy for a rejected non-invoice", () => {
+    render(<App initialQueueItems={[{
+      id: "intake-rejected", issuer: "Action_Plan.pdf", reference: "This file is not an invoice", amount: "—", age: "Sep 27",
+      status: "Quarantined", origin: "Captured", linked: false, blocker: "This file is not an invoice. Upload the correct invoice.",
+      blockerCode: "NOT_AN_INVOICE", description: "Recognition pending", assignedToMe: true, intakeStage: "PROCESSING_FAILED",
+    }]} />);
+    expect(screen.getAllByText("This file is not an invoice. Upload the correct invoice.")).toHaveLength(2);
+    expect(screen.getAllByText("This file is not an invoice")).toHaveLength(2);
+    expect(screen.queryByText("Manual upload · awaiting recognition")).not.toBeInTheDocument();
+    expect(screen.queryByText(/file was not sent for extraction/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the same corrective copy when assembly rejects an unrecognized document", () => {
+    render(<App initialQueueItems={[{
+      id: "intake-unrecognized", issuer: "blurred-invoice.pdf", reference: "Invoice details not recognized", amount: "—", age: "Sep 27",
+      status: "Quarantined", origin: "Captured", linked: false, blocker: "This appears to be an invoice, but required details could not be recognized. Upload a clearer invoice.",
+      blockerCode: "UNRECOGNIZED_INVOICE", description: "Recognition pending", assignedToMe: true, intakeStage: "PROCESSING_FAILED",
+    }]} />);
+    expect(screen.getAllByText("This appears to be an invoice, but required details could not be recognized. Upload a clearer invoice.")).toHaveLength(2);
+    expect(screen.queryByText(/processing failed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not sent for extraction/i)).not.toBeInTheDocument();
+  });
+
   it("edits extracted data and recalculates the invoice total", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -149,9 +229,10 @@ describe("Sprint 1 review flow", () => {
     await user.click(screen.getByRole("button", { name: "More actions" }));
     await user.click(screen.getByRole("button", { name: "Unassign from me" }));
     expect(screen.getByText("Invoice unassigned")).toBeVisible();
+    expect(screen.queryByText("Summit Photography")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Archive" }));
-    expect(screen.getByText("Summit Photography")).toBeVisible();
+    expect(screen.getAllByText("Summit Photography").length).toBeGreaterThan(0);
     expect(screen.queryByText("Apex Title Services")).not.toBeInTheDocument();
   });
 
@@ -160,7 +241,7 @@ describe("Sprint 1 review flow", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "More actions" }));
     expect(screen.getByRole("button", { name: "Unassign from me" })).toBeVisible();
-    await user.click(screen.getByRole("heading", { name: "Review queue" }));
+    await user.click(screen.getByRole("heading", { name: "Work queue" }));
     expect(screen.queryByRole("button", { name: "Unassign from me" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "More actions" }));
     await user.keyboard("{Escape}");
@@ -224,7 +305,7 @@ describe("Sprint 1 review flow", () => {
 
     await user.click(screen.getByRole("button", { name: "User menu" }));
     expect(screen.getByRole("button", { name: "Sign out" })).toBeVisible();
-    await user.click(screen.getByRole("heading", { name: "Review queue" }));
+    await user.click(screen.getByRole("heading", { name: "Work queue" }));
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "User menu" }));
@@ -240,6 +321,19 @@ describe("Sprint 1 review flow", () => {
       await user.click(screen.getByRole("button", { name: destination }));
       expect(screen.getByRole("button", { name: "User menu" })).toBeVisible();
     }
+  });
+
+  it("gives each invoice navigation destination a distinct view", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Work queue" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Invoices" }));
+    expect(screen.getByRole("heading", { name: "Invoices" })).toBeVisible();
+    expect(screen.getByPlaceholderText("Search invoices")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+    expect(screen.getByRole("heading", { name: "Verified invoices" })).toBeVisible();
+    expect(screen.getByPlaceholderText("Search verified invoices")).toBeVisible();
   });
 
   it("lets a tenant administrator publish a conditional approval policy", async () => {
@@ -326,5 +420,21 @@ describe("Sprint 1 review flow", () => {
     await user.click(screen.getByRole("button", { name: "Cancel upload" }));
     expect(cancel).toHaveBeenCalledWith("event-1");
     expect(screen.getByText("Upload cancelled")).toBeVisible();
+  });
+
+  it("carries an invoice into Transaction Files only through an explicit link action", async () => {
+    const user = userEvent.setup();
+    const invoice: QueueItem = { id: "invoice-link", issuer: "Cedar Lane Realty LLC", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, invoiceNumber: "TEST-INV-1001", description: "Services", assignedToMe: true, databaseVersion: 2 };
+    const transaction = { id: "tx-1", externalReference: "TX-1", propertyAddress: "1847 Cypress Avenue", lifecycle: "ACCUMULATING" as const, version: 1, updatedAt: "2026-09-27T00:00:00Z", requirements: [] };
+    render(<App initialQueueItems={[invoice]} transactions={[transaction]} />);
+
+    await user.click(screen.getByRole("button", { name: "Transaction Files" }));
+    expect(screen.queryByText("Cedar Lane Realty LLC · TEST-INV-1001")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Link selected invoice" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to invoices" }));
+    await user.click(screen.getByRole("button", { name: "Link to Transaction File" }));
+    expect(screen.getByText("Cedar Lane Realty LLC · TEST-INV-1001")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Link selected invoice" })).toBeVisible();
   });
 });

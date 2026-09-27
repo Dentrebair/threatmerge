@@ -81,26 +81,33 @@ This roadmap sequences the approved PRD v1.5, including Transaction File decisio
 
 **Acceptance:** closing never verifies or voids invoices; cancellation retains invoices; deferred payments require policy and documented reason.
 
-## Sprint 9: Full Extraction and Entity Resolution
+## Sprint 9: Extraction Reliability
 
-**Goal:** replace development fixtures with production processing.
+**Goal:** harden the current single-invoice extraction path and replace remaining development behavior with recoverable production processing.
 
-- Production safety scanner and quarantined-file remediation, delivered independently on `feature/production-malware-scanner` once source control is initialized.
-- PDF, scan, image, HEIC, DOCX, XLSX, CSV, printed-text, and handwriting preprocessing.
+- PDF, scanned PDF, and PNG/JPEG image preprocessing for printed or handwritten invoice content.
 - Schema-constrained extraction with source locations and provider/model/prompt versions.
+- Preserve the existing bounded worker retry and cancellation behavior without treating it as production resilience.
+- Multi-invoice uploads remain terminally rejected with `MULTIPLE_INVOICES`; users must upload each invoice separately.
+- Existing deterministic Transaction File suggestions remain available, but production hybrid entity resolution and automatic canonical population are not part of this phase.
+
+### Deferred to the next phase
+
+- Production malware scanning and quarantined-file remediation.
 - Multi-invoice splitting and multi-artifact invoice assembly.
-- Tenant-scoped hybrid linkage scoring, contradiction rules, near-tie review, and winning-margin enforcement.
-- Populate Transaction File parties, dates, documents, financials, and issues through proposals, never direct canonical writes.
-- Performance, retry, cancellation, lease-expiry, poison-input, and provider-failure tests.
+- Production entity resolution: embeddings, hybrid linkage scoring, configurable thresholds, auto-linking, near-tie enforcement, and proposal-based Transaction File population.
+- Production retry and provider-failure hardening: rate limits, exponential backoff tuning, dead-letter recovery, lease-expiry recovery, poison-input isolation, outage testing, alerts, and operator runbooks.
+- HEIC decoding, normalization, preview generation, and extraction.
+- DOCX, XLSX, and CSV preprocessing and source-coordinate mapping.
 
 ## Sprint 10: Email Ingestion and Cross-Email Accumulation
 
 **Goal:** process fragmented evidence arriving over time.
 
-- Tenant forwarding-address/Postmark ingestion and signed-webhook verification.
+- Tenant forwarding-address/Postmark ingestion with HTTPS, HTTP Basic authentication, optional provider-IP allowlisting, strict payload validation, and idempotent receipts. Postmark does not provide webhook signatures.
 - `.eml` upload including Gmail-originated messages and attachments.
 - Microsoft 365 OAuth/Graph ingestion; native Gmail OAuth remains deferred unless reprioritized.
-- Thread-independent entity resolution, deduplication, temporal precedence, and evidence graph updates.
+- Thread-independent accumulation and deduplication; production entity resolution remains deferred to the next phase.
 - User-friendly connection, delay, retry, and failure states.
 - Notifications for new blockers, deadlines, overdue documents, conflicts, failed processing, review completion, and reopened files.
 

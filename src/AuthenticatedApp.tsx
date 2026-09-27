@@ -4,8 +4,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { App } from "./App.js";
 import type { InvoiceDraft, QueueItem } from "./App.js";
 import { isSupabaseConfigured, supabase } from "./infrastructure/supabase/client.js";
-import { listInvoices, reprocessInvoice, saveInvoiceField, verifyInvoice, type PersistedInvoice } from "./infrastructure/supabase/invoices.js";
-import { cancelIntakeScan, listIntakeReceipts, uploadEvidence, type IntakeQueueItem } from "./infrastructure/supabase/manual-intake.js";
+import { dismissInvoice, listInvoices, reprocessInvoice, saveInvoiceField, verifyInvoice, type PersistedInvoice } from "./infrastructure/supabase/invoices.js";
+import { cancelIntakeScan, dismissIntakeReceipt, listIntakeReceipts, uploadEvidence, type IntakeQueueItem } from "./infrastructure/supabase/manual-intake.js";
 import { loadWorkspaceSession, signIn, signOut, type WorkspaceSession } from "./infrastructure/supabase/session.js";
 import { getCurrentApprovalPolicy, publishApprovalPolicy, type ApprovalPolicy } from "./infrastructure/supabase/approval-policies.js";
 import { ApprovalPolicySettings } from "./ApprovalPolicySettings.js";
@@ -165,6 +165,7 @@ export function AuthenticatedApp() {
     const version = await setTransactionFinancial({ transactionId: transaction.id, version: transaction.version, actorId: session!.user.id, ...input });
     patchTransaction(transaction.id, (item) => ({ ...item, version,
       ...reviewStagePatch(item.businessStage),
+      ...(!item.baseCurrency || input.kind === "DEAL_VALUE" ? { baseCurrency: input.currency } : {}),
       financials: [...(item.financials ?? []).filter((entry) => !(entry.kind === input.kind && entry.label === input.label)), { id: `financial-${input.kind}-${input.label}`, ...input }],
     }));
   }
@@ -251,6 +252,14 @@ export function AuthenticatedApp() {
     }}
     onUpload={upload}
     onCancelIntake={cancelScan}
+    onDismissIntake={async (ingestionEventId) => {
+      await dismissIntakeReceipt({ tenantId: workspace.tenantId, ingestionEventId, actorId: session.user.id });
+      setReceipts(await listIntakeReceipts(workspace.tenantId));
+    }}
+    onDismissInvoice={async (input) => {
+      await dismissInvoice({ ...input, actorId: session.user.id });
+      setInvoices(await listInvoices());
+    }}
     onCreateTransaction={createTransaction}
     onAddTransactionRequirement={addRequirement}
     onUpdateTransactionDetails={editTransaction}
@@ -306,13 +315,14 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
   const items: QueueItem[] = invoices.map((invoice) => {
     const lineItems = extractedLineItems(invoice.fields);
     const lineItem = lineItems[0] ?? { description: "", quantity: "", unitPrice: "", amount: "" };
+    const blocker = invoice.blockerCode ? invoiceBlockerCopy(invoice.blockerCode) : undefined;
     return {
     id: invoice.id,
     issuer: invoice.issuer,
     reference: invoice.linkageStatus === "LINKED" ? "Linked Transaction File" : "Standalone invoice",
     amount: invoice.total === null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: invoice.currency }).format(invoice.total),
     age: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(invoice.updatedAt)),
-    status: invoice.lifecycle === "VERIFIED" ? "Verified" : invoice.lifecycle === "PENDING_REVIEW" || invoice.lifecycle === "READY_FOR_VERIFICATION" ? "Ready to review" : "Needs attention",
+    status: invoice.lifecycle === "VERIFIED" ? "Verified" : invoice.blockerCode ? "Needs attention" : invoice.lifecycle === "PENDING_REVIEW" || invoice.lifecycle === "READY_FOR_VERIFICATION" ? "Ready to review" : "Needs attention",
     origin: invoice.origin,
     linked: invoice.linkageStatus === "LINKED",
     ...(invoice.transactionFileId ? { linkedTransactionId: invoice.transactionFileId } : {}),
@@ -320,8 +330,11 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     description: lineItem.description,
     assignedToMe: true,
     databaseVersion: invoice.version,
+    ...(invoice.blockerCode ? { blockerCode: invoice.blockerCode } : {}),
+    ...(blocker ? { blocker } : {}),
     ...(invoice.sourceUrl ? { sourceUrl: invoice.sourceUrl } : {}),
     ...(invoice.sourceMediaType ? { sourceMediaType: invoice.sourceMediaType } : {}),
+    provenance: invoice.provenance,
     ...(lineItems.length ? { lineItems } : {}),
     subtotalAmount: formatInvoiceAmount(invoice.fields.subtotal, invoice.currency),
     taxAmount: formatInvoiceAmount(invoice.fields.tax ?? 0, invoice.currency),
@@ -330,13 +343,21 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
   for (const receipt of receipts) items.push({
     id: `intake-${receipt.ingestionEventId}`,
     issuer: receipt.fileName,
-    reference: receipt.safetyStatus === "QUARANTINED" ? "Upload requires replacement" : "Manual upload · awaiting recognition",
+    reference: receipt.failureReason === "NOT_AN_INVOICE" ? "This file is not an invoice"
+      : receipt.failureReason === "UNRECOGNIZED_INVOICE" ? "Invoice details not recognized"
+      : receipt.failureReason === "MULTIPLE_INVOICES" ? "Multiple invoices detected"
+      : receipt.safetyStatus === "QUARANTINED" ? "Upload requires replacement"
+      : "Manual upload · awaiting recognition",
     amount: "—",
     age: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(receipt.receivedAt)),
     status: receipt.safetyStatus === "QUARANTINED" || receipt.processingStatus === "FAILED" ? "Quarantined" : "Processing",
     origin: "Captured",
     linked: false,
-    ...(receipt.quarantineReason ? { blocker: receipt.quarantineReason } : receipt.processingStatus === "FAILED" ? { blocker: "Processing failed" } : {}),
+    ...(receipt.failureReason === "NOT_AN_INVOICE" ? { blocker: "This file is not an invoice. Upload the correct invoice.", blockerCode: receipt.failureReason }
+      : receipt.failureReason === "UNRECOGNIZED_INVOICE" ? { blocker: "This appears to be an invoice, but required details could not be recognized. Upload a clearer invoice.", blockerCode: receipt.failureReason }
+      : receipt.failureReason === "MULTIPLE_INVOICES" ? { blocker: "This file contains multiple invoices. Upload each invoice separately." }
+      : receipt.quarantineReason ? { blocker: receipt.quarantineReason }
+      : receipt.processingStatus === "FAILED" ? { blocker: "Processing failed" } : {}),
     description: "Recognition pending",
     assignedToMe: true,
     intakeStage: receipt.safetyStatus === "QUARANTINED" ? "QUARANTINED" : receipt.processingStatus === "FAILED" ? "PROCESSING_FAILED" : receipt.processingStage === "EXTRACT_EVIDENCE" ? "EXTRACTING" : receipt.processingStage === "ASSEMBLE_INVOICE" ? "ASSEMBLING" : receipt.processingStatus === "RUNNING" ? "SCANNING" : "QUEUED_FOR_SCAN",
@@ -358,6 +379,14 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
   }));
   for (const receipt of receipts) drafts[`intake-${receipt.ingestionEventId}`] = { invoiceNumber: "", date: "", issuer: receipt.fileName, billTo: "", currency: "USD", description: "", quantity: "1", rate: "0" };
   return { items, drafts };
+}
+
+function invoiceBlockerCopy(code: string): string {
+  if (code === "PROBABLE_DUPLICATE") return "Possible duplicate invoice";
+  if (code === "INVALID:financialConsistency") return "Subtotal, tax, and total do not reconcile";
+  if (code.startsWith("CONFLICT:")) return "Conflicting extracted information";
+  if (code.startsWith("MISSING:")) return "Required information missing";
+  return "Review required";
 }
 
 function extractedLineItems(fields: Record<string, unknown>): Array<{ description: string; quantity: string; unitPrice: string; amount: string }> {

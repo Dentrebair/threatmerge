@@ -4,7 +4,7 @@ Uploads are stored first, then processed by server-side workers. The browser mus
 
 ## Evidence safety worker
 
-> Deferred: production activation belongs to Sprint 9. The worker is disabled unless `MALWARE_SCANNING_ENABLED=true` is explicitly set in its server-only environment.
+> Deferred: production activation belongs to the next product phase. The worker is disabled unless `MALWARE_SCANNING_ENABLED=true` is explicitly set in its server-only environment.
 
 For local workflow testing, use the development validator. It verifies that PDF, JPG, and PNG contents match their file signatures, but it is **not malware protection** and cannot run when `NODE_ENV=production`.
 
@@ -29,7 +29,7 @@ The scanner endpoint receives `POST` requests with `application/octet-stream` co
 { "safe": false, "reason": "MALWARE_DETECTED" }
 ```
 
-The worker polls while idle, backs off after database claim failures, retries failed jobs through the database queue policy, and exits cleanly on `SIGINT` or `SIGTERM`. The application can accept uploads without the worker, but those uploads remain pending until a worker is connected.
+The worker polls while idle, uses the current bounded database retry policy, and exits cleanly on `SIGINT` or `SIGTERM`. Production retry tuning, dead-letter recovery, provider failover, outage testing, alerts, and recovery runbooks are deferred to the next product phase. The application can accept uploads without the worker, but those uploads remain pending until a worker is connected.
 
 For production, run at least one worker as a separately monitored service. Configure restart-on-failure, capture structured logs, and alert on old queued jobs. Use an approved malware-scanning service; do not replace safety scanning with automatic success.
 

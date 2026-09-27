@@ -235,9 +235,8 @@ The system must process:
 - Email body text and email attachments received through a tenant-specific forwarding address or Microsoft 365 OAuth.
 - Uploaded `.eml` messages, including Gmail-originated messages and their attachments.
 - PDF and scanned PDF.
-- DOCX.
-- XLSX and CSV.
-- JPEG, PNG, and HEIC images.
+- DOCX, XLSX, and CSV are deferred until their preprocessing and source-coordinate pipelines are implemented.
+- JPEG, PNG, and HEIC images. HEIC delivery is deferred to the next product phase; the current phase supports JPEG and PNG.
 - Printed English text.
 - Handwritten English text, including small scanned paper slips.
 
@@ -304,7 +303,7 @@ Native Gmail OAuth and automatic Gmail mailbox synchronization are deferred. Gma
 
 Postmark Inbound is the v1 provider for tenant-specific forwarding addresses. The Postmark integration must remain behind the ingestion adapter so replacing the provider does not alter core processing or domain rules.
 
-Postmark webhook handlers must authenticate inbound requests, acknowledge ingestion quickly, and shift processing to background workers. The target handler flow is:
+Postmark webhook handlers must use HTTPS and HTTP Basic authentication, support deployment-level Postmark IP allowlisting, validate payloads strictly, acknowledge ingestion quickly, and shift processing to background workers. Postmark does not provide HMAC webhook signatures. The target handler flow is:
 
 1. Resolve and validate the tenant-specific recipient address.
 2. Persist the original raw MIME message and Postmark payload to Supabase Storage before transformation and record a content checksum.
