@@ -80,8 +80,8 @@ export interface InvoiceDraft {
 
 // Most draft keys match the persisted schema's field names directly. "date" doesn't:
 // the schema calls it "invoiceDate". description/quantity/rate have no matching
-// top-level field at all (they're part of the "lineItems" array) and are not covered
-// here; committing them does not currently persist anything meaningful.
+// top-level field at all (they're part of the "lineItems" array), so they're
+// persisted separately by commitLineItem() rather than through this map.
 const FIELD_NAME_OVERRIDES: Partial<Record<keyof InvoiceDraft, string>> = { date: "invoiceDate" };
 
 const initialQueue: QueueItem[] = [
@@ -356,7 +356,7 @@ interface AppProps {
   onSignOut?: () => void | Promise<void>;
   initialQueueItems?: QueueItem[];
   initialInvoiceDrafts?: Record<string, InvoiceDraft>;
-  onPersistField?: (input: { invoiceId: string; expectedVersion: number; field: string; value: string }) => Promise<number>;
+  onPersistField?: (input: { invoiceId: string; expectedVersion: number; field: string; value: unknown }) => Promise<number>;
   onVerify?: (input: { invoiceId: string; expectedVersion: number; origin: "Captured" | "Generated" }) => Promise<string>;
   onReprocess?: (input: { invoiceId: string; expectedVersion: number }) => Promise<void>;
   onUpload?: (file: File) => Promise<void>;
@@ -574,6 +574,36 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
       notify(`${field} saved`);
     } catch (reason) {
       setCommandError(reason instanceof Error ? reason.message : "Unable to save invoice field");
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
+  // description/quantity/rate have no matching top-level field: they live inside the
+  // single "lineItems" array field, so editing any one of them persists the whole
+  // (one-item) array under "lineItems" rather than a field of its own.
+  async function commitLineItem() {
+    if (!selected || !draft || !onPersistField || selected.databaseVersion === undefined) return;
+    if (!draft.description.trim()) return;
+    setCommandPending(true);
+    setCommandError(null);
+    try {
+      const quantity = draft.quantity.trim();
+      const rate = draft.rate.trim();
+      const amount = (Number(quantity || 0) * Number(rate || 0)).toFixed(2);
+      const lineItem: Record<string, string> = { description: draft.description, amount };
+      if (quantity) lineItem.quantity = quantity;
+      if (rate) lineItem.unitPrice = rate;
+      const nextVersion = await onPersistField({
+        invoiceId: selected.id,
+        expectedVersion: selected.databaseVersion,
+        field: "lineItems",
+        value: [lineItem],
+      });
+      updateSelected({ databaseVersion: nextVersion });
+      notify("Line item saved");
+    } catch (reason) {
+      setCommandError(reason instanceof Error ? reason.message : "Unable to save line item");
     } finally {
       setCommandPending(false);
     }
@@ -1175,9 +1205,9 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   </div>
                 )) : (
                   <div className="line-row">
-                    <input aria-label="Line item description" value={draft?.description ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("description", event.target.value)} onBlur={() => void commitField("description")} />
-                    <input aria-label="Quantity" type="number" min="0" value={draft?.quantity ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("quantity", event.target.value)} onBlur={() => void commitField("quantity")} />
-                    <input aria-label="Rate" type="number" min="0" step="0.01" value={draft?.rate ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("rate", event.target.value)} onBlur={() => void commitField("rate")} />
+                    <input aria-label="Line item description" value={draft?.description ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("description", event.target.value)} onBlur={() => void commitLineItem()} />
+                    <input aria-label="Quantity" type="number" min="0" value={draft?.quantity ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("quantity", event.target.value)} onBlur={() => void commitLineItem()} />
+                    <input aria-label="Rate" type="number" min="0" step="0.01" value={draft?.rate ?? ""} readOnly={selected?.status === "Verified"} onChange={(event) => updateDraft("rate", event.target.value)} onBlur={() => void commitLineItem()} />
                     <strong>{formattedTotal}</strong>
                   </div>
                 )}
