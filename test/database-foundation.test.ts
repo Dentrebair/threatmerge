@@ -249,6 +249,23 @@ describe("database foundation", () => {
     expect(counts.rows[0]).toEqual({ artifacts: 2, receipts: 2, jobs: 2 });
   });
 
+  it("registers Telegram uploads idempotently through the same evidence pipeline as manual uploads", async () => {
+    await db.exec("set role service_role");
+    const args = `'${ids.tenantA}', '${ids.tenantA}/telegram/invoice.pdf', 'application/pdf', 100, '${"9".repeat(64)}', 'chat-1:message-42', '{"chatId":1,"fromUsername":"alice"}'::jsonb`;
+    const first = await db.query<{ evidence_artifact_id: string; ingestion_event_id: string; processing_job_id: string }>(`select * from register_telegram_upload(${args})`);
+    const retry = await db.query<{ evidence_artifact_id: string; ingestion_event_id: string; processing_job_id: string }>(`select * from register_telegram_upload(${args})`);
+    expect(retry.rows[0]).toMatchObject(first.rows[0]!);
+    await db.exec("reset role");
+    expect((await db.query(`select channel::text from ingestion_events where id = '${first.rows[0]!.ingestion_event_id}'`)).rows[0]).toEqual({ channel: "TELEGRAM" });
+    expect((await db.query(`select job_type::text, status::text from processing_jobs where id = '${first.rows[0]!.processing_job_id}'`)).rows[0]).toMatchObject({ job_type: "SCAN_EVIDENCE", status: "QUEUED" });
+    expect((await db.query<{ metadata: { chatId: number; fromUsername: string; ingestionEventId: string } }>(
+      `select metadata from audit_events where event_type = 'TELEGRAM_MESSAGE_RECEIVED' and aggregate_id = '${first.rows[0]!.evidence_artifact_id}'`,
+    )).rows[0]?.metadata).toMatchObject({ chatId: 1, fromUsername: "alice" });
+    const counts = await db.query<{ artifacts: number; receipts: number }>(
+      "select (select count(*)::int from evidence_artifacts) artifacts, (select count(*)::int from ingestion_events where channel = 'TELEGRAM') receipts");
+    expect(counts.rows[0]).toEqual({ artifacts: 1, receipts: 1 });
+  });
+
   it("rejects unsafe manual upload metadata and unauthorized roles", async () => {
     await authenticate(db, ids.userA);
     await expect(db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantB}/escape.pdf', 'application/pdf', 100, '${"d".repeat(64)}', 'bad-path', '${ids.userA}')`)).rejects.toThrow(/tenant scoped/);
