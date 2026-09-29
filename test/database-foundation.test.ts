@@ -380,6 +380,28 @@ describe("database foundation", () => {
     expect((await db.query(`select id from work_items where record_id = '${result.rows[0]!.invoice_id}' and blocker_code = 'MISSING:invoiceNumber'`)).rows).toHaveLength(1);
   });
 
+  it("keeps an assembled invoice's receipt out of the intake queue even after the invoice is dismissed", async () => {
+    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{}}', now())`);
+    await authenticate(db, ids.userA);
+    const receipt = await db.query<{ evidence_artifact_id: string }>(`select evidence_artifact_id from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/dismiss-race/invoice.pdf', 'application/pdf', 100, '${"9".repeat(64)}', 'dismiss-race', '${ids.userA}')`);
+    await db.exec("reset role; set role service_role");
+    const scan = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('scan', array['SCAN_EVIDENCE'], 1)`);
+    await db.query(`select complete_evidence_scan('${scan.rows[0]!.id}', '${scan.rows[0]!.lock_token}', true, null)`);
+    const extraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    const observations = JSON.stringify([
+      { fieldName: "documentType", value: "INVOICE", sourceLocation: { page: 1 }, confidence: 0.99 },
+      { fieldName: "issuer", value: "Race Condition Vendor", sourceLocation: { page: 1 }, confidence: 0.98 },
+    ]).replaceAll("'", "''");
+    await db.query(`select complete_evidence_extraction('${extraction.rows[0]!.id}', '${extraction.rows[0]!.lock_token}', 'fixture', 'model-v1', 'prompt-v1', now(), '${observations}'::jsonb)`);
+    const assembly = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('assemble', array['ASSEMBLE_INVOICE'], 1)`);
+    const assembled = await db.query<{ invoice_id: string }>(`select complete_invoice_assembly('${assembly.rows[0]!.id}', '${assembly.rows[0]!.lock_token}') as invoice_id`);
+    await db.exec("reset role");
+    await authenticate(db, ids.userA);
+    expect((await db.query<{ count: number }>(`select count(*)::int as count from list_manual_intake_pipeline('${ids.tenantA}') where evidence_artifact_id = '${receipt.rows[0]!.evidence_artifact_id}'`)).rows[0]?.count).toBe(0);
+    await db.query(`select dismiss_invoice_candidate('${assembled.rows[0]!.invoice_id}', 1, '${ids.userA}')`);
+    expect((await db.query<{ count: number }>(`select count(*)::int as count from list_manual_intake_pipeline('${ids.tenantA}') where evidence_artifact_id = '${receipt.rows[0]!.evidence_artifact_id}'`)).rows[0]?.count).toBe(0);
+  });
+
   it("lets reviewers complete partial invoices and routes them only after all blockers are resolved", async () => {
     await db.exec(`
       insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, schema_fingerprint)

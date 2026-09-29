@@ -1,0 +1,40 @@
+-- list_manual_intake_pipeline only hid a receipt while its resulting invoice was not
+-- yet dismissed. Dismissing that invoice flipped the exists-check back to false, so the
+-- original receipt reappeared in the Work Queue looking like it was still processing,
+-- even though it had already been fully handled. Once any invoice has been assembled
+-- from an evidence artifact, its receipt should never resurface, regardless of what
+-- later happens to that invoice.
+drop function public.list_manual_intake_pipeline(uuid);
+create function public.list_manual_intake_pipeline(target_tenant uuid)
+returns table (
+  ingestion_event_id uuid, evidence_artifact_id uuid, file_name text, media_type text,
+  byte_size bigint, safety_status public.safety_status, quarantine_reason text,
+  processing_stage text, processing_status public.processing_status, failure_reason text,
+  received_at timestamptz
+)
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if not app_private.is_tenant_member(target_tenant) then raise exception 'workspace not found'; end if;
+  return query
+    select event.id, artifact.id, regexp_replace(artifact.storage_path, '^.*/', ''), artifact.media_type,
+      artifact.byte_size, artifact.safety_status, artifact.quarantine_reason,
+      latest.job_type, latest.status, latest.last_error_code, event.received_at
+    from public.ingestion_events event
+    join public.evidence_artifacts artifact on artifact.tenant_id = event.tenant_id and artifact.id = event.evidence_artifact_id
+    left join lateral (
+      select job.job_type, job.status, job.last_error_code from public.processing_jobs job
+      where job.tenant_id = event.tenant_id and job.aggregate_id = event.evidence_artifact_id
+      order by job.created_at desc, job.id desc limit 1
+    ) latest on true
+    where event.tenant_id = target_tenant and event.channel = 'MANUAL_UPLOAD' and event.dismissed_at is null
+      and coalesce(latest.status::text, '') not in ('CANCELLED','CANCEL_REQUESTED')
+      and not exists (select 1 from public.transaction_document_upload_intents intent where intent.tenant_id = event.tenant_id and intent.evidence_artifact_id = event.evidence_artifact_id)
+      and not exists (
+        select 1 from public.evidence_links link join public.invoice_candidates invoice on invoice.tenant_id = link.tenant_id and invoice.id = link.invoice_candidate_id
+        where link.tenant_id = event.tenant_id and link.evidence_artifact_id = event.evidence_artifact_id
+      )
+    order by event.received_at desc;
+end $$;
+
+revoke all on function public.list_manual_intake_pipeline(uuid) from public, anon;
+grant execute on function public.list_manual_intake_pipeline(uuid) to authenticated;
