@@ -61,6 +61,17 @@ This document records capacity and reliability work that is intentionally deferr
 - Current suggestions must remain advisory: no ambiguous or unmatched invoice may be silently linked.
 - Existing manual links, reviewer decisions, stale-proposal replacement, tenant isolation, and audit history remain supported.
 
+### Cross-email invoice fragment accumulation
+
+- Sprint 10 email ingestion allows the same invoice's details to arrive in separate emails days or weeks apart (e.g. a partial scan first, a clearer or more complete one later). Merging these into one invoice, rather than creating duplicate candidates, is deferred design work, not yet implemented.
+- Proposed approach, extending the existing architecture rather than changing it:
+  - **Match key**: same deterministic key already used for duplicate detection (issuer + invoice number). This requires the invoice number to appear in at least one fragment; there is no fuzzy-text fallback.
+  - **Match timing**: entity resolution must run before invoice assembly creates a candidate, not only at approval-routing time as today. On a new evidence artifact's extraction completing, check for an existing non-terminal invoice candidate with the same issuer + invoice number before deciding whether to create a new one or attach to the existing one.
+  - **Attachment, not merge**: a matched fragment's evidence artifact gets an additional `evidence_links` row (`relationship = 'SOURCE_DOCUMENT'`) pointing at the existing `invoice_candidate_id`; the schema already permits multiple such links per invoice, so this needs new selection logic, not a schema change.
+  - **Field resolution**: fields still missing get filled from the new fragment (clearing `MISSING:` blockers). Fields present in both fragments with the same value are unaffected. Fields present in both with different values become a `CONFLICT:` blocker for human review, reusing the conflict-detection logic already used when two extraction attempts on one document disagree.
+  - **Provenance**: unaffected, since each observation already carries its own evidence-artifact link independent of which invoice candidate it ends up attached to.
+  - **Known gap**: if the invoice number is absent from every fragment until a late email, there is nothing to match on until then; the fragments remain separate `INCOMPLETE_DRAFT` candidates until a human links them or a later email finally supplies the number.
+
 ### Retries and provider failures
 
 - Production-grade retry and provider-failure handling is deferred to the next phase.
@@ -93,4 +104,4 @@ Before enabling scanning, complete all of the following:
 
 ## Delivery Timing
 
-The 5 MB cap is an interim product constraint. Malware-scanner activation, multi-invoice splitting, production entity resolution, production retry/provider-failure hardening, resumable uploads, quotas, derivative generation, lifecycle cleanup, archival storage, and operational dashboards belong to the next-phase production-readiness work before scaling beyond controlled tenants.
+The 5 MB cap is an interim product constraint. Malware-scanner activation, multi-invoice splitting, production entity resolution, cross-email invoice fragment accumulation, production retry/provider-failure hardening, resumable uploads, quotas, derivative generation, lifecycle cleanup, archival storage, and operational dashboards belong to the next-phase production-readiness work before scaling beyond controlled tenants.
