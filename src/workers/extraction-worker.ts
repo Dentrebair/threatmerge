@@ -48,7 +48,12 @@ export function loadExtractionWorkerConfig(environment: NodeJS.ProcessEnv): Extr
     extractorToken: environment.DOCUMENT_EXTRACTOR_TOKEN!.trim(), batchSize: positiveInteger("EXTRACTION_WORKER_BATCH_SIZE", environment.EXTRACTION_WORKER_BATCH_SIZE, 5, 25),
     idleDelayMs: positiveInteger("EXTRACTION_WORKER_IDLE_DELAY_MS", environment.EXTRACTION_WORKER_IDLE_DELAY_MS, 2_000, 300_000),
     errorDelayMs: positiveInteger("EXTRACTION_WORKER_ERROR_DELAY_MS", environment.EXTRACTION_WORKER_ERROR_DELAY_MS, 10_000, 300_000),
-    requestTimeoutMs: positiveInteger("EXTRACTION_REQUEST_TIMEOUT_MS", environment.EXTRACTION_REQUEST_TIMEOUT_MS, 60_000, 300_000) };
+    // The adapter can make up to three sequential provider calls per request (OpenAI
+    // validation, then a Gemini primary and fallback attempt), each bounded by its own
+    // EXTRACTION_ENGINE_TIMEOUT_MS. This must stay comfortably above 3x that value or a
+    // slow-but-eventually-successful extraction gets aborted here and marked
+    // EXTRACTOR_UNAVAILABLE even though the adapter never actually failed.
+    requestTimeoutMs: positiveInteger("EXTRACTION_REQUEST_TIMEOUT_MS", environment.EXTRACTION_REQUEST_TIMEOUT_MS, 200_000, 300_000) };
 }
 
 export function waitForExtractionWorker(delayMs: number, signal?: AbortSignal): Promise<void> {

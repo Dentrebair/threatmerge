@@ -71,3 +71,5 @@ Invalid provider responses fail the job without writing observations. Provider e
 The adapter uses `gemini-3.1-flash-lite` first and retries difficult or invalid extraction with `gemini-3.5-flash`. Override these IDs with `GEMINI_PRIMARY_MODEL` and `GEMINI_FALLBACK_MODEL` only after verifying the replacement models in Google's model list.
 
 After Railway deploys the service, set the worker's `DOCUMENT_EXTRACTOR_URL` to `https://<railway-domain>/extract` and set `DOCUMENT_EXTRACTOR_TOKEN` to the same value as Railway's `EXTRACTION_ADAPTER_TOKEN`. Railway supplies the domain; Google AI Studio supplies the Gemini API key. Keep both secrets server-side.
+
+The adapter can make up to three sequential provider calls per request (OpenAI invoice validation, then a Gemini primary and fallback extraction attempt), each bounded by its own `EXTRACTION_ENGINE_TIMEOUT_MS`. The worker's `EXTRACTION_REQUEST_TIMEOUT_MS` must stay comfortably above 3x that value, or a slow-but-eventually-successful extraction gets aborted client-side and marked `EXTRACTOR_UNAVAILABLE` even though the adapter never actually failed. If you raise the adapter's timeout, raise the worker's too.
