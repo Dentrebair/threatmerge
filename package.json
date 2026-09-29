@@ -13,6 +13,7 @@
     "worker:evidence:dev": "RUN_EVIDENCE_WORKER=true EVIDENCE_SCANNER_MODE=development DEVELOPMENT_FILE_VALIDATION_ENABLED=true NODE_ENV=development tsx src/workers/evidence-worker.ts",
     "worker:extraction": "RUN_EXTRACTION_WORKER=true tsx src/workers/extraction-worker.ts",
     "service:extraction-adapter": "RUN_EXTRACTION_ADAPTER=true tsx src/services/extraction-adapter.ts",
+    "service:telegram-inbound": "RUN_TELEGRAM_INBOUND=true tsx src/services/telegram-inbound.ts",
     "worker:assembly": "RUN_ASSEMBLY_WORKER=true tsx src/workers/assembly-worker.ts",
     "worker:approval": "RUN_APPROVAL_WORKER=true tsx src/workers/approval-worker.ts",
     "test:watch": "vitest",
