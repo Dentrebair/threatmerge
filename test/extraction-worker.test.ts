@@ -59,6 +59,14 @@ describe("extraction worker", () => {
     expect(() => validateExtractionResult({ ...validResult, observations: [lineItem({ description: "Shipping", quantity: "not-a-number", amount: "20.00" })] })).toThrow("invalid line items");
   });
 
+  it("normalizes decimal amounts the model returns as bare JSON numbers", () => {
+    const lineItem = (line: Record<string, unknown>) => ({ fieldName: "lineItems", value: [line], sourceLocation: { page: 1 }, confidence: 0.9 });
+    const result = validateExtractionResult({ ...validResult, observations: [lineItem({ description: "Printer Toner Cartridge", quantity: 2, unitPrice: "1500.00", amount: "3000.00" })] });
+    expect(result.observations[0]?.value).toEqual([{ description: "Printer Toner Cartridge", quantity: "2", unitPrice: "1500.00", amount: "3000.00" }]);
+    const totalResult = validateExtractionResult({ ...validResult, observations: [{ fieldName: "total", value: 6490, sourceLocation: { page: 1 }, confidence: 0.9 }] });
+    expect(totalResult.observations[0]?.value).toBe("6490");
+  });
+
   it("records provider outages as retryable failures", async () => {
     const store = backend([job]);
     const extractor: DocumentExtractor = { extract: vi.fn().mockRejectedValue(new Error("extractor unavailable (503)")) };

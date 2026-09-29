@@ -87,8 +87,11 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
       && Number(boundingBox.x) + Number(boundingBox.width) <= 1
       && Number(boundingBox.y) + Number(boundingBox.height) <= 1;
     if (boundingBox !== undefined && !validBoundingBox) console.warn(`Dropped malformed bounding box for ${observation.fieldName}:`, JSON.stringify(boundingBox));
-    if (DECIMAL_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !DECIMAL_PATTERN.test(observation.value))) {
-      throw new Error(`extractor returned an invalid ${observation.fieldName}`);
+    let normalizedValue: unknown = observation.value;
+    if (DECIMAL_FIELDS.has(observation.fieldName)) {
+      const decimal = toDecimalString(observation.value);
+      if (decimal === null) throw new Error(`extractor returned an invalid ${observation.fieldName}`);
+      normalizedValue = decimal;
     }
     if (DATE_FIELDS.has(observation.fieldName) && (typeof observation.value !== "string" || !isIsoDate(observation.value))) {
       throw new Error(`extractor returned an invalid ${observation.fieldName}`);
@@ -96,10 +99,10 @@ export function validateExtractionResult(value: unknown): ExtractionResult {
     if (observation.fieldName === "currency" && (typeof observation.value !== "string" || !/^[A-Z]{3}$/.test(observation.value))) {
       throw new Error("extractor returned an invalid currency");
     }
-    if (observation.fieldName === "lineItems") validateLineItems(observation.value);
+    if (observation.fieldName === "lineItems") normalizedValue = validateLineItems(observation.value);
     return {
       fieldName: observation.fieldName,
-      value: observation.value,
+      value: normalizedValue,
       sourceLocation: validBoundingBox ? observation.sourceLocation : { page },
       confidence: observation.confidence,
     };
@@ -113,29 +116,49 @@ function isIsoDate(value: string): boolean {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-function validateLineItems(value: unknown): void {
+// Models are told to return decimal amounts as strings but commonly return a bare JSON
+// number instead (observed in production: {"quantity": 2, "unitPrice": "1500.00"} in the
+// same object). Accept either and normalize to the canonical string form we store.
+function toDecimalString(value: unknown): string | null {
+  if (typeof value === "string") return DECIMAL_PATTERN.test(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = value.toString();
+    return DECIMAL_PATTERN.test(normalized) ? normalized : null;
+  }
+  return null;
+}
+
+interface ValidatedLineItem { description: string; amount: string; quantity?: string; unitPrice?: string }
+
+function validateLineItems(value: unknown): ValidatedLineItem[] {
   if (!Array.isArray(value) || value.length > 500) {
     console.error("Rejected line items array:", JSON.stringify(value)?.slice(0, 500));
     throw new Error("extractor returned invalid line items");
   }
-  for (const line of value) {
+  return value.map((line) => {
     if (!isRecord(line) || typeof line.description !== "string" || !line.description.trim()) {
       console.error("Rejected line item (bad description):", JSON.stringify(line));
       throw new Error("extractor returned invalid line items");
     }
-    if (typeof line.amount !== "string" || !DECIMAL_PATTERN.test(line.amount)) {
+    const amount = toDecimalString(line.amount);
+    if (amount === null) {
       console.error("Rejected line item field \"amount\":", JSON.stringify(line.amount), "full line:", JSON.stringify(line));
       throw new Error("extractor returned invalid line items");
     }
+    const result: ValidatedLineItem = { description: line.description, amount };
     // quantity and unitPrice are omitted by the model for flat-fee lines (no per-unit
     // breakdown on the source document); only validate them when actually present.
     for (const key of ["quantity", "unitPrice"] as const) {
-      if (line[key] !== undefined && (typeof line[key] !== "string" || !DECIMAL_PATTERN.test(line[key]))) {
+      if (line[key] === undefined) continue;
+      const normalized = toDecimalString(line[key]);
+      if (normalized === null) {
         console.error(`Rejected line item field "${key}":`, JSON.stringify(line[key]), "full line:", JSON.stringify(line));
         throw new Error("extractor returned invalid line items");
       }
+      result[key] = normalized;
     }
-  }
+    return result;
+  });
 }
 
 export async function processExtractionBatch(backend: ExtractionBackend, extractor: DocumentExtractor, workerId: string, limit = 5): Promise<number> {

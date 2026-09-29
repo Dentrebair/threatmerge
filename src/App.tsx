@@ -1037,9 +1037,9 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
           ) : null}
 
           {selected?.status === "Quarantined" ? (
-            <section className="quarantine-panel" aria-label="Quarantined file">
-              <div className="state-symbol quarantine-symbol"><ShieldAlert size={24} /></div>
-              <h3>File not recognized</h3>
+            <section className="quarantine-panel" aria-label={selected.intakeStage === "QUARANTINED" ? "Quarantined file" : "Processing failed"}>
+              <div className="state-symbol quarantine-symbol">{selected.intakeStage === "QUARANTINED" ? <ShieldAlert size={24} /> : <AlertTriangle size={24} />}</div>
+              <h3>{selected.intakeStage === "QUARANTINED" ? "File blocked by security scan" : "File not recognized"}</h3>
               <p>{selected.blocker}{["NOT_AN_INVOICE", "UNRECOGNIZED_INVOICE"].includes(selected.blockerCode ?? "") ? "" : ". No invoice was generated."}</p>
               <button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>
                 <Upload size={16} /> Replace file
