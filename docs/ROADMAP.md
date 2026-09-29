@@ -100,16 +100,18 @@ This roadmap sequences the approved PRD v1.5, including Transaction File decisio
 - HEIC decoding, normalization, preview generation, and extraction.
 - DOCX, XLSX, and CSV preprocessing and source-coordinate mapping.
 
-## Sprint 10: Email Ingestion and Cross-Email Accumulation
+## Sprint 10: Telegram Ingestion and Cross-Channel Accumulation
 
-**Goal:** process fragmented evidence arriving over time.
+**Goal:** accept invoices sent as chat attachments and process fragmented evidence arriving over time, through the same evidence intake and extraction pipeline manual upload already uses.
 
-- Tenant forwarding-address/Postmark ingestion with HTTPS, HTTP Basic authentication, optional provider-IP allowlisting, strict payload validation, and idempotent receipts. Postmark does not provide webhook signatures.
-- `.eml` upload including Gmail-originated messages and attachments.
-- Microsoft 365 OAuth/Graph ingestion; native Gmail OAuth remains deferred unless reprioritized.
-- Thread-independent accumulation and deduplication; production entity resolution remains deferred to the next phase.
+- Telegram bot registered via BotFather; webhook handler (mirroring the existing Postmark inbound handler's shape) authenticated the way Telegram's webhook model requires.
+- New `TELEGRAM` ingestion channel; `getFile` resolution and byte download from Telegram's API before handing off to evidence intake.
+- Tenant mapping: every Telegram message routes to a single fixed test tenant for this phase (no per-chat identity resolution yet). Real mapping — a chat-to-tenant pairing step — is deferred; see `SCALING.md`.
+- No new extraction-quality work: handwritten, blurred, and incomplete invoices already route through the existing OCR, confidence-routing, and `INCOMPLETE_DRAFT` handling built in Sprint 9. Telegram only needs to deliver bytes into that pipeline.
+- Thread-independent accumulation and deduplication across fragments arriving over time; production entity resolution remains deferred to the next phase (design recorded in `SCALING.md`).
 - User-friendly connection, delay, retry, and failure states.
 - Notifications for new blockers, deadlines, overdue documents, conflicts, failed processing, review completion, and reopened files.
+- Deferred to a later phase: email ingestion (tenant forwarding-address/Postmark, `.eml` upload, Microsoft 365 OAuth/Graph) and native Gmail OAuth.
 
 ## Sprint 11: Corrections, Publication, and Integrations
 
