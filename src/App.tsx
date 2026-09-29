@@ -78,6 +78,12 @@ export interface InvoiceDraft {
   rate: string;
 }
 
+// Most draft keys match the persisted schema's field names directly. "date" doesn't:
+// the schema calls it "invoiceDate". description/quantity/rate have no matching
+// top-level field at all (they're part of the "lineItems" array) and are not covered
+// here; committing them does not currently persist anything meaningful.
+const FIELD_NAME_OVERRIDES: Partial<Record<keyof InvoiceDraft, string>> = { date: "invoiceDate" };
+
 const initialQueue: QueueItem[] = [
   {
     id: "inv-1049",
@@ -350,7 +356,7 @@ interface AppProps {
   onSignOut?: () => void | Promise<void>;
   initialQueueItems?: QueueItem[];
   initialInvoiceDrafts?: Record<string, InvoiceDraft>;
-  onPersistField?: (input: { invoiceId: string; expectedVersion: number; field: keyof InvoiceDraft; value: string }) => Promise<number>;
+  onPersistField?: (input: { invoiceId: string; expectedVersion: number; field: string; value: string }) => Promise<number>;
   onVerify?: (input: { invoiceId: string; expectedVersion: number; origin: "Captured" | "Generated" }) => Promise<string>;
   onReprocess?: (input: { invoiceId: string; expectedVersion: number }) => Promise<void>;
   onUpload?: (file: File) => Promise<void>;
@@ -560,7 +566,8 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
       const nextVersion = await onPersistField({
         invoiceId: selected.id,
         expectedVersion: selected.databaseVersion,
-        field,
+        // The draft's own key names don't always match the schema's field names.
+        field: FIELD_NAME_OVERRIDES[field] ?? field,
         value: draft[field],
       });
       updateSelected({ databaseVersion: nextVersion });

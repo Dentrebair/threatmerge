@@ -385,6 +385,20 @@ describe("Sprint 1 review flow", () => {
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 2, origin: "Captured" }));
   });
 
+  it("persists an edited invoice date under the schema's field name, not the draft's", async () => {
+    const user = userEvent.setup();
+    const item: QueueItem = { id: "00000000-0000-4000-8000-000000000032", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1 };
+    const draft: InvoiceDraft = { invoiceNumber: "INV-1", date: "2026-09-18", issuer: "Northstar", billTo: "Cedar Lane", currency: "USD", description: "Inspection", quantity: "1", rate: "486" };
+    const persist = vi.fn().mockResolvedValue(2);
+    render(<App initialQueueItems={[item]} initialInvoiceDrafts={{ [item.id]: draft }} onPersistField={persist} />);
+
+    const dateField = screen.getByLabelText("Invoice date");
+    await user.clear(dateField);
+    await user.type(dateField, "2026-09-20");
+    await user.tab();
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 1, field: "invoiceDate", value: "2026-09-20" }));
+  });
+
   it("does not claim extraction has started for a queued intake receipt", () => {
     const receipt: QueueItem = { id: "intake-1", issuer: "invoice.pdf", reference: "Manual upload · awaiting recognition", amount: "—", age: "Today", status: "Processing", origin: "Captured", linked: false, description: "Recognition pending", assignedToMe: true, intakeStage: "QUEUED_FOR_SCAN" };
     render(<App initialQueueItems={[receipt]} initialInvoiceDrafts={{ [receipt.id]: { invoiceNumber: "", date: "", issuer: "invoice.pdf", billTo: "", currency: "USD", description: "", quantity: "1", rate: "0" } }} />);
