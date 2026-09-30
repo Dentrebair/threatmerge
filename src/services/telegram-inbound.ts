@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
+import { loadEnvFile } from "node:process";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const SUPPORTED_TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
@@ -214,6 +216,7 @@ export function loadTelegramInboundConfig(environment: NodeJS.ProcessEnv): Teleg
 }
 
 async function main() {
+  if (existsSync(".env.worker.local")) loadEnvFile(".env.worker.local");
   const config = loadTelegramInboundConfig(process.env);
   const client = createClient(config.supabaseUrl, config.serviceRoleKey, { auth: { persistSession: false } });
   const handler = createTelegramInboundHandler(new SupabaseTelegramBackend(client, config.botToken, config.tenantId), config.webhookSecret);
