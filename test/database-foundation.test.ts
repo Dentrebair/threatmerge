@@ -434,12 +434,39 @@ describe("database foundation", () => {
     expect((await db.query(`select id from work_items where record_id = '${invoiceId}' and status = 'OPEN'`)).rows).toHaveLength(0);
   });
 
+  it("records the default currency as a tracked field value instead of leaving it permanently unresolvable", async () => {
+    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{"currency":{"required":true}}}', now())`);
+    await authenticate(db, ids.userA);
+    await db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/no-currency/invoice.pdf', 'application/pdf', 100, '${"c".repeat(64)}', 'no-currency', '${ids.userA}')`);
+    await db.exec("reset role; set role service_role");
+    const scan = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('scan', array['SCAN_EVIDENCE'], 1)`);
+    await db.query(`select complete_evidence_scan('${scan.rows[0]!.id}', '${scan.rows[0]!.lock_token}', true, null)`);
+    const extraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    // No currency observation at all - nothing on a handwritten receipt indicates one.
+    const observations = JSON.stringify([
+      { fieldName: "documentType", value: "INVOICE", sourceLocation: { page: 1 }, confidence: 0.99 },
+      { fieldName: "issuer", value: "Corner Grocery", sourceLocation: { page: 1 }, confidence: 0.9 },
+      { fieldName: "total", value: "450.00", sourceLocation: { page: 1 }, confidence: 0.9 },
+    ]).replaceAll("'", "''");
+    await db.query(`select complete_evidence_extraction('${extraction.rows[0]!.id}', '${extraction.rows[0]!.lock_token}', 'fixture', 'model-v1', 'prompt-v1', now(), '${observations}'::jsonb)`);
+    const assembly = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('assemble', array['ASSEMBLE_INVOICE'], 1)`);
+    const result = await db.query<{ invoice_id: string }>(`select complete_invoice_assembly('${assembly.rows[0]!.id}', '${assembly.rows[0]!.lock_token}') as invoice_id`);
+    await db.exec("reset role");
+    const invoiceId = result.rows[0]!.invoice_id;
+
+    const invoice = await db.query<{ lifecycle: string; currency: string }>(`select lifecycle, currency from invoice_candidates where id = '${invoiceId}'`);
+    expect(invoice.rows[0]).toEqual({ lifecycle: "READY_FOR_VERIFICATION", currency: "USD" });
+    expect((await db.query(`select id from work_items where record_id = '${invoiceId}' and blocker_code = 'MISSING:currency'`)).rows).toHaveLength(0);
+    expect((await db.query<{ resolved_value: string; resolution_method: string }>(`select resolved_value, resolution_method from invoice_field_values where invoice_candidate_id = '${invoiceId}' and field_name = 'currency'`)).rows[0]).toEqual({ resolved_value: "USD", resolution_method: "DEFAULTED" });
+  });
+
   it("carries reviewer-entered fields forward across reprocessing instead of discarding them", async () => {
-    // currency is deliberately left unfilled and unextractable, mirroring the real
+    // billTo is deliberately left unfilled and unextractable, mirroring the real
     // scenario that motivated this fix: a reviewer fills in some but not all required
     // fields (issuer, invoiceNumber), the invoice stays INCOMPLETE_DRAFT because
-    // currency is still missing, and only then is it reprocessed.
-    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{"issuer":{"required":true},"invoiceNumber":{"required":true},"currency":{"required":true}}}', now())`);
+    // billTo is still missing, and only then is it reprocessed. (currency can't be used
+    // for this - it always defaults, so it's never actually left "missing".)
+    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{"issuer":{"required":true},"invoiceNumber":{"required":true},"billTo":{"required":true}}}', now())`);
     await authenticate(db, ids.userA);
     await db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/reprocess/invoice.pdf', 'application/pdf', 100, '${"b".repeat(64)}', 'reprocess', '${ids.userA}')`);
     await db.exec("reset role; set role service_role");
@@ -484,10 +511,10 @@ describe("database foundation", () => {
       select invoice.lifecycle, invoice.source_invoice_number, issuer.legal_name as issuer
       from invoice_candidates invoice join issuers issuer on issuer.id = invoice.issuer_id
       where invoice.id = '${secondInvoiceId}'`);
-    // Still INCOMPLETE_DRAFT - currency was never filled in and still isn't extractable -
+    // Still INCOMPLETE_DRAFT - billTo was never filled in and still isn't extractable -
     // but the carried-over fields must not be re-flagged as missing.
     expect(second.rows[0]).toEqual({ lifecycle: "INCOMPLETE_DRAFT", source_invoice_number: "INV-9023", issuer: "Corner Grocery" });
-    expect((await db.query(`select blocker_code from work_items where record_id = '${secondInvoiceId}' and status = 'OPEN'`)).rows).toEqual([{ blocker_code: "MISSING:currency" }]);
+    expect((await db.query(`select blocker_code from work_items where record_id = '${secondInvoiceId}' and status = 'OPEN'`)).rows).toEqual([{ blocker_code: "MISSING:billTo" }]);
     expect((await db.query<{ resolution_method: string }>(`select resolution_method from invoice_field_values where invoice_candidate_id = '${secondInvoiceId}' and field_name = 'issuer'`)).rows[0]).toEqual({ resolution_method: "REVIEWER_ENTERED" });
     expect((await db.query<{ resolution_method: string }>(`select resolution_method from invoice_field_values where invoice_candidate_id = '${secondInvoiceId}' and field_name = 'invoiceNumber'`)).rows[0]).toEqual({ resolution_method: "REVIEWER_ENTERED" });
   });
