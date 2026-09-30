@@ -241,7 +241,11 @@ export function AuthenticatedApp() {
     return published;
   }} /></>;
   const { items, drafts } = toAppInvoices(invoices ?? [], receipts);
-  return <>{syncWarning ? <SyncWarning message={syncWarning} /> : null}<App key={items.map((item) => `${item.id}:${item.status}:${item.databaseVersion ?? 0}`).join("|")} workspaceName={workspace.tenantName} userEmail={session.user.email ?? "Signed-in user"} initialQueueItems={items} initialInvoiceDrafts={drafts} workspaceRole={workspace.role} approvalPolicy={approvalPolicy} transactions={transactions} transactionActions={transactionActions.map((item) => ({ ...item, assignedToMe: item.assignedTo === session.user.id }))} linkageProposals={linkageProposals} transactionTypes={transactionTypes} transactionOwners={transactionOwners}
+  // Remounting on every status/version change (the old key) tore down the whole form -
+  // including whatever the user was mid-typing - on every 5-second poll if anything in
+  // the tenant's invoice list changed, even an unrelated invoice or the user's own edit
+  // landing back from the server. Remount only when the *set* of invoices changes.
+  return <>{syncWarning ? <SyncWarning message={syncWarning} /> : null}<App key={items.map((item) => item.id).slice().sort().join("|")} workspaceName={workspace.tenantName} userEmail={session.user.email ?? "Signed-in user"} initialQueueItems={items} initialInvoiceDrafts={drafts} workspaceRole={workspace.role} approvalPolicy={approvalPolicy} transactions={transactions} transactionActions={transactionActions.map((item) => ({ ...item, assignedToMe: item.assignedTo === session.user.id }))} linkageProposals={linkageProposals} transactionTypes={transactionTypes} transactionOwners={transactionOwners}
     onPersistField={(input) => saveInvoiceField({ ...input, actorId: session.user.id })}
     onVerify={(input) => verifyInvoice({ ...input, actorId: session.user.id })}
     onReprocess={async (input) => {
