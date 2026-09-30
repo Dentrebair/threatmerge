@@ -424,6 +424,20 @@ interface AppProps {
 
 export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kumar", onSignOut, initialQueueItems = initialQueue, initialInvoiceDrafts, onPersistField, onVerify, onReprocess, onUpload, onCancelIntake, onDismissIntake, onDismissInvoice, workspaceRole = "TENANT_ADMIN", approvalPolicy = null, onPublishApprovalPolicy, transactions = [], transactionActions = [], linkageProposals = [], transactionTypes = [], transactionOwners = [], onCreateTransaction, onAddTransactionRequirement, onUpdateTransactionDetails, onRemoveTransactionRequirement, onLinkTransaction, onResolveLinkageProposal, onUpdateTransactionRequirement, onEvaluateTransaction, onApproveTransaction, onReactivateTransaction, onBeginTransactionWork, onSubmitTransactionReview, onCompleteTransactionReview, onAddTransactionParty, onSetTransactionDate, onSetTransactionFinancial, onAddTransactionCustomField, onSetTransactionCustomFieldValue, onUploadTransactionDocument, onSetTransactionRequirementValue, onReviewTransactionDocument, onCancelTransactionDocumentUpload, onSetTransactionInvoicePayment, onUnlinkTransactionInvoice, onReviewTransactionInvoiceContext, onCreateTransactionIssue, onResolveTransactionIssue, onCloseTransactionFile, onCancelTransactionFile, onReopenTransactionFile }: AppProps = {}) {
   const [queue, setQueue] = useState(initialQueueItems);
+  // The parent only remounts this component (resetting all state) when invoices are
+  // added or removed, so that in-progress typing in `drafts` never gets wiped by a
+  // routine poll. But that means a background-only change - e.g. the approval worker
+  // moving an invoice from READY_FOR_VERIFICATION to PENDING_REVIEW right after its
+  // last required field is saved - never reaches `queue` on its own, leaving a stale
+  // databaseVersion that the next command (like Approve) would send and get rejected
+  // for. Refresh each item's server-derived fields from fresh props on every poll;
+  // `drafts` and `invoiceNumbers` hold the actual in-progress edits and are untouched.
+  useEffect(() => {
+    setQueue((current) => {
+      const freshById = new Map(initialQueueItems.map((item) => [item.id, item]));
+      return current.map((item) => freshById.get(item.id) ?? item);
+    });
+  }, [initialQueueItems]);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");
   const [invoiceNumbers, setInvoiceNumbers] = useState<Record<string, string>>(
     Object.fromEntries(

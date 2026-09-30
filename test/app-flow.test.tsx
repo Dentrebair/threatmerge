@@ -440,6 +440,22 @@ describe("Sprint 1 review flow", () => {
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 2, origin: "Captured" }));
   });
 
+  it("picks up a background version bump (e.g. the approval worker routing the invoice) without a remount", async () => {
+    const user = userEvent.setup();
+    const item: QueueItem = { id: "00000000-0000-4000-8000-000000000035", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, invoiceNumber: "SRC-1", description: "Inspection", assignedToMe: true, databaseVersion: 1 };
+    const verify = vi.fn().mockResolvedValue("record-id");
+
+    const { rerender } = render(<App initialQueueItems={[item]} onVerify={verify} />);
+    // Simulates the parent's 5-second poll landing with a version the approval worker
+    // already bumped in the background - same component instance, no remount, the way
+    // AuthenticatedApp only changes <App>'s key when invoices are added or removed.
+    rerender(<App initialQueueItems={[{ ...item, databaseVersion: 4 }]} onVerify={verify} />);
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await user.click(screen.getByRole("button", { name: "Approve invoice" }));
+    expect(verify).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 4 }));
+  });
+
   it("saves the currency dropdown immediately and reformats the displayed total", async () => {
     const user = userEvent.setup();
     const item: QueueItem = { id: "00000000-0000-4000-8000-000000000034", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1, totalValue: 486 };
