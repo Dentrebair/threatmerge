@@ -397,6 +397,43 @@ describe("database foundation", () => {
     expect((await db.query(`select id from work_items where record_id = '${result.rows[0]!.invoice_id}' and blocker_code = 'MISSING:invoiceNumber'`)).rows).toHaveLength(1);
   });
 
+  it("assembles a fillable draft with a placeholder issuer when no issuer is extracted, and lets a reviewer resolve it", async () => {
+    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{"issuer":{"required":true}}}', now())`);
+    await authenticate(db, ids.userA);
+    await db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/no-issuer/invoice.pdf', 'application/pdf', 100, '${"a".repeat(64)}', 'no-issuer', '${ids.userA}')`);
+    await db.exec("reset role; set role service_role");
+    const scan = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('scan', array['SCAN_EVIDENCE'], 1)`);
+    await db.query(`select complete_evidence_scan('${scan.rows[0]!.id}', '${scan.rows[0]!.lock_token}', true, null)`);
+    const extraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    const observations = JSON.stringify([
+      { fieldName: "documentType", value: "INVOICE", sourceLocation: { page: 1 }, confidence: 0.99 },
+      { fieldName: "total", value: "450.00", sourceLocation: { page: 1 }, confidence: 0.9 },
+    ]).replaceAll("'", "''");
+    await db.query(`select complete_evidence_extraction('${extraction.rows[0]!.id}', '${extraction.rows[0]!.lock_token}', 'fixture', 'model-v1', 'prompt-v1', now(), '${observations}'::jsonb)`);
+    const assembly = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('assemble', array['ASSEMBLE_INVOICE'], 1)`);
+    const result = await db.query<{ invoice_id: string }>(`select complete_invoice_assembly('${assembly.rows[0]!.id}', '${assembly.rows[0]!.lock_token}') as invoice_id`);
+    await db.exec("reset role");
+    expect(result.rows[0]?.invoice_id).toBeTruthy();
+    const invoiceId = result.rows[0]!.invoice_id;
+    const invoice = await db.query<{ lifecycle: string; issuer: string }>(`
+      select invoice.lifecycle, issuer.legal_name as issuer
+      from invoice_candidates invoice join issuers issuer on issuer.id = invoice.issuer_id
+      where invoice.id = '${invoiceId}'`);
+    expect(invoice.rows[0]).toEqual({ lifecycle: "INCOMPLETE_DRAFT", issuer: "Unspecified issuer" });
+    expect((await db.query(`select id from work_items where record_id = '${invoiceId}' and blocker_code = 'MISSING:issuer' and status = 'OPEN'`)).rows).toHaveLength(1);
+    expect((await db.query(`select id from invoice_field_values where invoice_candidate_id = '${invoiceId}' and field_name = 'issuer'`)).rows).toHaveLength(0);
+
+    await authenticate(db, ids.userA);
+    await db.query(`select record_invoice_field_value('${invoiceId}', 1, 'issuer', '"Corner Grocery"'::jsonb, '${ids.userA}')`);
+    await db.exec("reset role");
+    const resolved = await db.query<{ lifecycle: string; issuer: string }>(`
+      select invoice.lifecycle, issuer.legal_name as issuer
+      from invoice_candidates invoice join issuers issuer on issuer.id = invoice.issuer_id
+      where invoice.id = '${invoiceId}'`);
+    expect(resolved.rows[0]).toEqual({ lifecycle: "READY_FOR_VERIFICATION", issuer: "Corner Grocery" });
+    expect((await db.query(`select id from work_items where record_id = '${invoiceId}' and status = 'OPEN'`)).rows).toHaveLength(0);
+  });
+
   it("keeps an assembled invoice's receipt out of the intake queue even after the invoice is dismissed", async () => {
     await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{}}', now())`);
     await authenticate(db, ids.userA);
@@ -492,6 +529,51 @@ describe("database foundation", () => {
     await db.exec("reset role");
     const invoice = await db.query<{ approval_decision: string; approval_reason: string }>(`select approval_decision, approval_reason from invoice_candidates where id = '${ids.invoiceA}'`);
     expect(invoice.rows[0]).toEqual({ approval_decision: "HUMAN_REVIEW", approval_reason: "MANDATORY_POLICY" });
+  });
+
+  it("flags a probable duplicate by matching total and line items when neither invoice has an invoice number", async () => {
+    const existingInvoiceId = "00000000-0000-4000-8000-000000000099";
+    await db.exec(`
+      insert into approval_policy_versions (tenant_id, version, mode, published_at) values ('${ids.tenantA}', 1, 'MANDATORY', now());
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, schema_fingerprint, total)
+        values ('${existingInvoiceId}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'PENDING_REVIEW', 'schema:v1', 450),
+          ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'READY_FOR_VERIFICATION', 'schema:v1', 450);
+      insert into invoice_field_values (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method) values
+        ('${ids.tenantA}', '${existingInvoiceId}', 'lineItems', '[{"description":"Rice","amount":"120"}]', 'EXTRACTED'),
+        ('${ids.tenantA}', '${ids.invoiceA}', 'lineItems', '[{"description":"Rice","amount":"120"}]', 'EXTRACTED');
+      insert into processing_jobs (tenant_id, job_type, aggregate_id, idempotency_key)
+        values ('${ids.tenantA}', 'ROUTE_INVOICE_APPROVAL', '${ids.invoiceA}', 'route:${ids.invoiceA}');
+      set role service_role;
+    `);
+    const job = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('route', array['ROUTE_INVOICE_APPROVAL'], 1)`);
+    const routed = await db.query<{ lifecycle: string }>(`select route_invoice_approval('${job.rows[0]!.id}', '${job.rows[0]!.lock_token}')::text as lifecycle`);
+    expect(routed.rows[0]?.lifecycle).toBe("PENDING_REVIEW");
+    await db.exec("reset role");
+    const invoice = await db.query<{ approval_reason: string }>(`select approval_reason from invoice_candidates where id = '${ids.invoiceA}'`);
+    expect(invoice.rows[0]).toEqual({ approval_reason: "PROBABLE_DUPLICATE" });
+    expect((await db.query(`select id from work_items where record_id = '${ids.invoiceA}' and blocker_code = 'PROBABLE_DUPLICATE'`)).rows).toHaveLength(1);
+  });
+
+  it("does not flag unrelated invoices from the same issuer as duplicates just for lacking an invoice number", async () => {
+    const existingInvoiceId = "00000000-0000-4000-8000-000000000098";
+    await db.exec(`
+      insert into approval_policy_versions (tenant_id, version, mode, published_at) values ('${ids.tenantA}', 1, 'AUTOMATIC', now());
+      insert into invoice_candidates (id, tenant_id, issuer_id, origin, lifecycle, schema_fingerprint, total)
+        values ('${existingInvoiceId}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'PENDING_REVIEW', 'schema:v1', 999),
+          ('${ids.invoiceA}', '${ids.tenantA}', '${ids.issuerA}', 'CAPTURED', 'READY_FOR_VERIFICATION', 'schema:v1', 450);
+      insert into invoice_field_values (tenant_id, invoice_candidate_id, field_name, resolved_value, resolution_method) values
+        ('${ids.tenantA}', '${existingInvoiceId}', 'lineItems', '[{"description":"Unrelated","amount":"999"}]', 'EXTRACTED'),
+        ('${ids.tenantA}', '${ids.invoiceA}', 'lineItems', '[{"description":"Rice","amount":"120"}]', 'EXTRACTED');
+      insert into processing_jobs (tenant_id, job_type, aggregate_id, idempotency_key)
+        values ('${ids.tenantA}', 'ROUTE_INVOICE_APPROVAL', '${ids.invoiceA}', 'route:${ids.invoiceA}');
+      set role service_role;
+    `);
+    const job = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('route', array['ROUTE_INVOICE_APPROVAL'], 1)`);
+    const routed = await db.query<{ lifecycle: string }>(`select route_invoice_approval('${job.rows[0]!.id}', '${job.rows[0]!.lock_token}')::text as lifecycle`);
+    expect(routed.rows[0]?.lifecycle).toBe("PENDING_REVIEW");
+    await db.exec("reset role");
+    const invoice = await db.query<{ approval_reason: string }>(`select approval_reason from invoice_candidates where id = '${ids.invoiceA}'`);
+    expect(invoice.rows[0]).toEqual({ approval_reason: "AUTOMATION_PROFILE_NOT_APPROVED" });
   });
 
   it("falls back to human review when automatic verification has no approved profile", async () => {
