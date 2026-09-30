@@ -1118,6 +1118,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                     <button className="blocker-action" type="button" disabled={commandPending || !onReprocess} onClick={() => void reprocessSelectedInvoice()}>
                       <RefreshCw size={14} /> {commandPending ? "Queuing..." : "Process again"}
                     </button>
+                    {commandError ? <span className="field-error">{commandError}</span> : null}
                   </div>
                 </div>
               ) : (

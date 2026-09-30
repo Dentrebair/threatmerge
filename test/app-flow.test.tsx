@@ -119,6 +119,31 @@ describe("Sprint 1 review flow", () => {
     expect(screen.queryByRole("button", { name: "Re-run extraction" })).not.toBeInTheDocument();
   });
 
+  it("shows the actual error when reprocessing an incomplete invoice fails", async () => {
+    const user = userEvent.setup();
+    const incomplete: QueueItem = {
+      id: "invoice-incomplete-2",
+      issuer: "Lotus Blossom Spa",
+      reference: "Standalone invoice",
+      amount: "$138.00",
+      age: "Today",
+      status: "Needs attention",
+      origin: "Captured",
+      linked: false,
+      invoiceNumber: "2025-100034",
+      description: "Invoice service",
+      assignedToMe: true,
+      databaseVersion: 1,
+    };
+    const reprocess = vi.fn().mockRejectedValue(new Error("the source document cannot be processed again; upload it again"));
+
+    render(<App initialQueueItems={[incomplete]} onReprocess={reprocess} />);
+    await user.click(screen.getByRole("button", { name: "Process again" }));
+
+    expect(reprocess).toHaveBeenCalled();
+    expect(screen.getByText("the source document cannot be processed again; upload it again")).toBeVisible();
+  });
+
   it("renders every persisted line item without replacing the invoice total", () => {
     const invoice: QueueItem = {
       id: "invoice-lines",
