@@ -64,6 +64,7 @@ export interface QueueItem {
   lineItems?: Array<{ description: string; quantity: string; unitPrice: string; amount: string }>;
   subtotalAmount?: string;
   taxAmount?: string;
+  totalValue?: number | null;
   provenance?: Record<string, { confidence: number | null; page: number; boundingBox?: { x: number; y: number; width: number; height: number }; provider: string; modelVersion: string; promptVersion: string; extractedAt: string }>;
 }
 
@@ -83,6 +84,10 @@ export interface InvoiceDraft {
 // top-level field at all (they're part of the "lineItems" array), so they're
 // persisted separately by commitLineItem() rather than through this map.
 const FIELD_NAME_OVERRIDES: Partial<Record<keyof InvoiceDraft, string>> = { date: "invoiceDate" };
+
+// Matches the tenant-configurable base currencies (PRD: INR default, USD and EUR also
+// supported).
+const SUPPORTED_CURRENCIES = ["USD", "INR", "EUR"] as const;
 
 const initialQueue: QueueItem[] = [
   {
@@ -190,6 +195,7 @@ interface FieldProps {
   onChange?: (value: string) => void;
   onInspect?: () => void;
   onCommit?: () => void;
+  options?: readonly string[];
 }
 
 function InvoiceField({
@@ -201,6 +207,7 @@ function InvoiceField({
   onChange,
   onInspect,
   onCommit,
+  options,
 }: FieldProps) {
   const inputId = useId();
   return (
@@ -222,6 +229,17 @@ function InvoiceField({
           </button>
         ) : null}
       </span>
+      {options ? (
+        <select
+          id={inputId}
+          aria-invalid={invalid}
+          disabled={!onChange}
+          value={value}
+          onChange={(event) => onChange?.(event.target.value)}
+        >
+          {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+      ) : (
       <input
         id={inputId}
         aria-invalid={invalid}
@@ -230,6 +248,7 @@ function InvoiceField({
         onChange={(event) => onChange?.(event.target.value)}
         onBlur={onCommit}
       />
+      )}
       {invalid ? <span className="field-error">Required before approval</span> : null}
     </div>
   );
@@ -494,7 +513,14 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     style: "currency",
     currency: draft?.currency || "USD",
   }).format(Number.isFinite(total) ? total : 0);
-  const displayedTotal = selected?.databaseVersion !== undefined ? selected.amount : formattedTotal;
+  // Reformat with the currently-selected currency, not the currency the invoice was
+  // last saved with, so switching the dropdown updates the displayed amount immediately
+  // instead of waiting for a reload.
+  const displayedTotal = selected?.databaseVersion !== undefined
+    ? (selected.totalValue != null
+      ? new Intl.NumberFormat("en-US", { style: "currency", currency: draft?.currency || "USD" }).format(selected.totalValue)
+      : selected.amount)
+    : formattedTotal;
   const queueView = activeNav === "archive"
     ? { title: "Verified invoices", search: "Search verified invoices", empty: "No verified invoices", emptyHint: "Verified invoices will appear here." }
     : activeNav === "invoices"
@@ -559,7 +585,10 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     }));
   }
 
-  async function commitField(field: keyof InvoiceDraft) {
+  // valueOverride exists because a <select> commits from its onChange, which runs
+  // before the updateDraft() state update it just triggered has landed - reading
+  // draft[field] there would send the value from before this change, not after.
+  async function commitField(field: keyof InvoiceDraft, valueOverride?: string) {
     if (!selected || !draft || !onPersistField || selected.databaseVersion === undefined) return;
     setCommandPending(true);
     setCommandError(null);
@@ -569,7 +598,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
         expectedVersion: selected.databaseVersion,
         // The draft's own key names don't always match the schema's field names.
         field: FIELD_NAME_OVERRIDES[field] ?? field,
-        value: draft[field],
+        value: valueOverride ?? draft[field],
       });
       updateSelected({ databaseVersion: nextVersion });
       notify(`${field} saved`);
@@ -1184,7 +1213,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
               />
               <div className="field-grid">
                 <InvoiceField label="Bill-to party" value={draft?.billTo ?? ""} confidence={confidenceFor(selected, "billTo")} onInspect={() => inspectSource("billTo")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("billTo", value) })} onCommit={() => void commitField("billTo")} />
-                <InvoiceField label="Currency" value={draft?.currency ?? ""} confidence={confidenceFor(selected, "currency")} onInspect={() => inspectSource("currency")} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => updateDraft("currency", value.toUpperCase()) })} onCommit={() => void commitField("currency")} />
+                <InvoiceField label="Currency" value={draft?.currency ?? ""} confidence={confidenceFor(selected, "currency")} onInspect={() => inspectSource("currency")} options={SUPPORTED_CURRENCIES} {...(selected?.status === "Verified" ? {} : { onChange: (value: string) => { updateDraft("currency", value); void commitField("currency", value); } })} />
               </div>
 
               <div className="section-divider" />

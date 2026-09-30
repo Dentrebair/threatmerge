@@ -325,6 +325,7 @@ function toAppInvoices(invoices: PersistedInvoice[], receipts: IntakeQueueItem[]
     issuer: invoice.issuer,
     reference: invoice.linkageStatus === "LINKED" ? "Linked Transaction File" : "Standalone invoice",
     amount: invoice.total === null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: invoice.currency }).format(invoice.total),
+    totalValue: invoice.total,
     age: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(invoice.updatedAt)),
     status: invoice.lifecycle === "VERIFIED" ? "Verified" : invoice.blockerCode ? "Needs attention" : invoice.lifecycle === "PENDING_REVIEW" || invoice.lifecycle === "READY_FOR_VERIFICATION" ? "Ready to review" : "Needs attention",
     origin: invoice.origin,

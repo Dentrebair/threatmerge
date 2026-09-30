@@ -440,6 +440,20 @@ describe("Sprint 1 review flow", () => {
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 2, origin: "Captured" }));
   });
 
+  it("saves the currency dropdown immediately and reformats the displayed total", async () => {
+    const user = userEvent.setup();
+    const item: QueueItem = { id: "00000000-0000-4000-8000-000000000034", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1, totalValue: 486 };
+    const draft: InvoiceDraft = { invoiceNumber: "INV-1", date: "2026-09-18", issuer: "Northstar", billTo: "Cedar Lane", currency: "USD", description: "Inspection", quantity: "1", rate: "486" };
+    const persist = vi.fn().mockResolvedValue(2);
+
+    render(<App initialQueueItems={[item]} initialInvoiceDrafts={{ [item.id]: draft }} onPersistField={persist} />);
+    expect(screen.getAllByText("$486.00").length).toBeGreaterThan(0);
+
+    await user.selectOptions(screen.getByLabelText("Currency"), "INR");
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 1, field: "currency", value: "INR" }));
+    expect(screen.getAllByText("₹486.00").length).toBeGreaterThan(0);
+  });
+
   it("persists an edited invoice date under the schema's field name, not the draft's", async () => {
     const user = userEvent.setup();
     const item: QueueItem = { id: "00000000-0000-4000-8000-000000000032", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1 };
