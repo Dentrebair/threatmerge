@@ -73,3 +73,21 @@ The adapter uses `gemini-3.1-flash-lite` first and retries difficult or invalid 
 After Railway deploys the service, set the worker's `DOCUMENT_EXTRACTOR_URL` to `https://<railway-domain>/extract` and set `DOCUMENT_EXTRACTOR_TOKEN` to the same value as Railway's `EXTRACTION_ADAPTER_TOKEN`. Railway supplies the domain; Google AI Studio supplies the Gemini API key. Keep both secrets server-side.
 
 The adapter can make up to three sequential provider calls per request (OpenAI invoice validation, then a Gemini primary and fallback extraction attempt), each bounded by its own `EXTRACTION_ENGINE_TIMEOUT_MS`. The worker's `EXTRACTION_REQUEST_TIMEOUT_MS` must stay comfortably above 3x that value, or a slow-but-eventually-successful extraction gets aborted client-side and marked `EXTRACTOR_UNAVAILABLE` even though the adapter never actually failed. If you raise the adapter's timeout, raise the worker's too.
+
+## Telegram inbound (Sprint 10)
+
+A Telegram bot is a second evidence intake channel alongside manual upload, feeding the exact same scan/extract/assemble pipeline. It is deployed as its own Railway service — separate from the extraction adapter — because it needs `SUPABASE_SERVICE_ROLE_KEY` to register evidence directly, while the extraction adapter deliberately has no Supabase access at all.
+
+1. Register a bot via [@BotFather](https://t.me/BotFather) (`/newbot`) and get its token.
+2. Create a new Railway service configured to use `railway-telegram.toml`, and set: `TELEGRAM_BOT_TOKEN` (from BotFather), `TELEGRAM_WEBHOOK_SECRET` (any random string you generate — Telegram echoes it back on every webhook delivery as `X-Telegram-Bot-Api-Secret-Token`, playing the same role Basic auth plays for Postmark's inbound webhook, since Telegram doesn't sign payloads), `TELEGRAM_TEST_TENANT_ID` (the tenant every message currently routes to — see "Deferred: real tenant mapping" below), `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`.
+3. Once Railway deploys the service, register the webhook once by calling Telegram's API directly (there is no in-app button for this yet):
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+     -d "url=https://<railway-domain>/webhooks/telegram/inbound" \
+     --data-urlencode "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+   ```
+4. Send a PDF/JPG/PNG to the bot in a private chat. It replies in-chat to confirm receipt, and the file appears in the Work Queue like any other upload, tagged `channel: 'TELEGRAM'`.
+
+Handwritten, blurred, and incomplete invoices need no special handling here — the existing OCR, confidence-routing, and `INCOMPLETE_DRAFT` handling from Sprint 9 already covers them; Telegram only needs to get bytes into that pipeline.
+
+**Deferred**: every message currently routes to one fixed test tenant (`TELEGRAM_TEST_TENANT_ID`) rather than a real per-chat identity. A pairing step (a tenant admin links their workspace to a Telegram chat via a one-time code) is recorded as deferred design in `SCALING.md`.
