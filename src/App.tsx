@@ -432,10 +432,24 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   // databaseVersion that the next command (like Approve) would send and get rejected
   // for. Refresh each item's server-derived fields from fresh props on every poll;
   // `drafts` and `invoiceNumbers` hold the actual in-progress edits and are untouched.
+  // sourceUrl/sourceMediaType are deliberately kept from the old item, not the fresh
+  // one: Supabase signed URLs carry a new token on every fetch even for the same file,
+  // so refreshing them each poll forced the PDF/image preview to fully reload every
+  // few seconds. A given invoice id's source file never changes without becoming a
+  // new invoice id (e.g. reprocessing), which already goes through a remount.
   useEffect(() => {
     setQueue((current) => {
       const freshById = new Map(initialQueueItems.map((item) => [item.id, item]));
-      return current.map((item) => freshById.get(item.id) ?? item);
+      return current.map((item) => {
+        const fresh = freshById.get(item.id);
+        if (!fresh) return item;
+        const { sourceUrl: _freshSourceUrl, sourceMediaType: _freshSourceMediaType, ...rest } = fresh;
+        return {
+          ...rest,
+          ...(item.sourceUrl !== undefined ? { sourceUrl: item.sourceUrl } : {}),
+          ...(item.sourceMediaType !== undefined ? { sourceMediaType: item.sourceMediaType } : {}),
+        };
+      });
     });
   }, [initialQueueItems]);
   const [selectedId, setSelectedId] = useState(initialQueueItems === initialQueue ? "inv-1048" : initialQueueItems[0]?.id ?? "");

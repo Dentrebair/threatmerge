@@ -456,6 +456,18 @@ describe("Sprint 1 review flow", () => {
     expect(verify).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 4 }));
   });
 
+  it("keeps the source document preview stable across a poll instead of reloading it", () => {
+    const item: QueueItem = { id: "00000000-0000-4000-8000-000000000036", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1, sourceUrl: "https://storage.example/original-token", sourceMediaType: "application/pdf" };
+
+    const { rerender } = render(<App initialQueueItems={[item]} />);
+    expect(screen.getByTitle("Uploaded invoice")).toHaveAttribute("src", "https://storage.example/original-token");
+
+    // Supabase re-signs the URL (a fresh token) on every poll even though it's the same
+    // file; the preview must not reload from it.
+    rerender(<App initialQueueItems={[{ ...item, databaseVersion: 2, sourceUrl: "https://storage.example/refreshed-token" }]} />);
+    expect(screen.getByTitle("Uploaded invoice")).toHaveAttribute("src", "https://storage.example/original-token");
+  });
+
   it("saves the currency dropdown immediately and reformats the displayed total", async () => {
     const user = userEvent.setup();
     const item: QueueItem = { id: "00000000-0000-4000-8000-000000000034", issuer: "Northstar", reference: "Standalone invoice", amount: "$486.00", age: "Today", status: "Ready to review", origin: "Captured", linked: false, description: "Inspection", assignedToMe: true, databaseVersion: 1, totalValue: 486 };
