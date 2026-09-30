@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App, type InvoiceDraft, type QueueItem } from "../src/App.js";
@@ -139,9 +139,39 @@ describe("Sprint 1 review flow", () => {
 
     render(<App initialQueueItems={[incomplete]} onReprocess={reprocess} />);
     await user.click(screen.getByRole("button", { name: "Process again" }));
+    const dialog = screen.getByRole("dialog", { name: "Process this invoice again?" });
+    await user.click(within(dialog).getByRole("button", { name: "Process again" }));
 
     expect(reprocess).toHaveBeenCalled();
     expect(screen.getByText("the source document cannot be processed again; upload it again")).toBeVisible();
+  });
+
+  it("asks for confirmation before reprocessing and does nothing on cancel", async () => {
+    const user = userEvent.setup();
+    const incomplete: QueueItem = {
+      id: "invoice-incomplete-3",
+      issuer: "Lotus Blossom Spa",
+      reference: "Standalone invoice",
+      amount: "$138.00",
+      age: "Today",
+      status: "Needs attention",
+      origin: "Captured",
+      linked: false,
+      invoiceNumber: "2025-100034",
+      description: "Invoice service",
+      assignedToMe: true,
+      databaseVersion: 1,
+    };
+    const reprocess = vi.fn().mockResolvedValue(undefined);
+
+    render(<App initialQueueItems={[incomplete]} onReprocess={reprocess} />);
+    await user.click(screen.getByRole("button", { name: "Process again" }));
+    expect(screen.getByRole("dialog", { name: "Process this invoice again?" })).toBeVisible();
+    expect(reprocess).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(reprocess).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Process this invoice again?" })).not.toBeInTheDocument();
   });
 
   it("renders every persisted line item without replacing the invoice total", () => {

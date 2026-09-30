@@ -434,6 +434,64 @@ describe("database foundation", () => {
     expect((await db.query(`select id from work_items where record_id = '${invoiceId}' and status = 'OPEN'`)).rows).toHaveLength(0);
   });
 
+  it("carries reviewer-entered fields forward across reprocessing instead of discarding them", async () => {
+    // currency is deliberately left unfilled and unextractable, mirroring the real
+    // scenario that motivated this fix: a reviewer fills in some but not all required
+    // fields (issuer, invoiceNumber), the invoice stays INCOMPLETE_DRAFT because
+    // currency is still missing, and only then is it reprocessed.
+    await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{"issuer":{"required":true},"invoiceNumber":{"required":true},"currency":{"required":true}}}', now())`);
+    await authenticate(db, ids.userA);
+    await db.query(`select * from register_manual_upload('${ids.tenantA}', '${ids.tenantA}/reprocess/invoice.pdf', 'application/pdf', 100, '${"b".repeat(64)}', 'reprocess', '${ids.userA}')`);
+    await db.exec("reset role; set role service_role");
+    const scan = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('scan', array['SCAN_EVIDENCE'], 1)`);
+    await db.query(`select complete_evidence_scan('${scan.rows[0]!.id}', '${scan.rows[0]!.lock_token}', true, null)`);
+    const firstExtraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    const firstObservations = JSON.stringify([
+      { fieldName: "documentType", value: "INVOICE", sourceLocation: { page: 1 }, confidence: 0.99 },
+      { fieldName: "total", value: "450.00", sourceLocation: { page: 1 }, confidence: 0.9 },
+    ]).replaceAll("'", "''");
+    await db.query(`select complete_evidence_extraction('${firstExtraction.rows[0]!.id}', '${firstExtraction.rows[0]!.lock_token}', 'fixture', 'model-v1', 'prompt-v1', now(), '${firstObservations}'::jsonb)`);
+    const firstAssembly = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('assemble', array['ASSEMBLE_INVOICE'], 1)`);
+    const firstResult = await db.query<{ invoice_id: string }>(`select complete_invoice_assembly('${firstAssembly.rows[0]!.id}', '${firstAssembly.rows[0]!.lock_token}') as invoice_id`);
+    await db.exec("reset role");
+    const firstInvoiceId = firstResult.rows[0]!.invoice_id;
+
+    await authenticate(db, ids.userA);
+    await db.query(`select record_invoice_field_value('${firstInvoiceId}', 1, 'issuer', '"Corner Grocery"'::jsonb, '${ids.userA}')`);
+    await db.query(`select record_invoice_field_value('${firstInvoiceId}', 2, 'invoiceNumber', '"INV-9023"'::jsonb, '${ids.userA}')`);
+    const reprocessed = await db.query<{ evidence_artifact_id: string }>(`select request_invoice_reprocessing('${firstInvoiceId}', 3, '${ids.userA}') as evidence_artifact_id`);
+    expect(reprocessed.rows[0]?.evidence_artifact_id).toBeTruthy();
+    await db.exec("reset role");
+    expect((await db.query(`select lifecycle from invoice_candidates where id = '${firstInvoiceId}'`)).rows[0]).toEqual({ lifecycle: "DISMISSED" });
+
+    await db.exec("set role service_role");
+    const secondExtraction = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('extract', array['EXTRACT_EVIDENCE'], 1)`);
+    // The second pass still can't read the issuer - the same real-world limitation that
+    // triggered the reprocess in the first place - so this exercises the carryover, not a
+    // now-successful extraction papering over it.
+    const secondObservations = JSON.stringify([
+      { fieldName: "documentType", value: "INVOICE", sourceLocation: { page: 1 }, confidence: 0.99 },
+      { fieldName: "total", value: "450.00", sourceLocation: { page: 1 }, confidence: 0.95 },
+    ]).replaceAll("'", "''");
+    await db.query(`select complete_evidence_extraction('${secondExtraction.rows[0]!.id}', '${secondExtraction.rows[0]!.lock_token}', 'fixture', 'model-v1', 'prompt-v2', now(), '${secondObservations}'::jsonb)`);
+    const secondAssembly = await db.query<{ id: string; lock_token: string }>(`select id, lock_token from claim_processing_jobs('assemble', array['ASSEMBLE_INVOICE'], 1)`);
+    const secondResult = await db.query<{ invoice_id: string }>(`select complete_invoice_assembly('${secondAssembly.rows[0]!.id}', '${secondAssembly.rows[0]!.lock_token}') as invoice_id`);
+    await db.exec("reset role");
+    const secondInvoiceId = secondResult.rows[0]!.invoice_id;
+    expect(secondInvoiceId).not.toBe(firstInvoiceId);
+
+    const second = await db.query<{ lifecycle: string; source_invoice_number: string; issuer: string }>(`
+      select invoice.lifecycle, invoice.source_invoice_number, issuer.legal_name as issuer
+      from invoice_candidates invoice join issuers issuer on issuer.id = invoice.issuer_id
+      where invoice.id = '${secondInvoiceId}'`);
+    // Still INCOMPLETE_DRAFT - currency was never filled in and still isn't extractable -
+    // but the carried-over fields must not be re-flagged as missing.
+    expect(second.rows[0]).toEqual({ lifecycle: "INCOMPLETE_DRAFT", source_invoice_number: "INV-9023", issuer: "Corner Grocery" });
+    expect((await db.query(`select blocker_code from work_items where record_id = '${secondInvoiceId}' and status = 'OPEN'`)).rows).toEqual([{ blocker_code: "MISSING:currency" }]);
+    expect((await db.query<{ resolution_method: string }>(`select resolution_method from invoice_field_values where invoice_candidate_id = '${secondInvoiceId}' and field_name = 'issuer'`)).rows[0]).toEqual({ resolution_method: "REVIEWER_ENTERED" });
+    expect((await db.query<{ resolution_method: string }>(`select resolution_method from invoice_field_values where invoice_candidate_id = '${secondInvoiceId}' and field_name = 'invoiceNumber'`)).rows[0]).toEqual({ resolution_method: "REVIEWER_ENTERED" });
+  });
+
   it("keeps an assembled invoice's receipt out of the intake queue even after the invoice is dismissed", async () => {
     await db.exec(`insert into invoice_schema_versions (tenant_id, version, scope, rules, published_at) values ('${ids.tenantA}', 1, 'BROKERAGE_DEFAULT', '{"fields":{}}', now())`);
     await authenticate(db, ids.userA);

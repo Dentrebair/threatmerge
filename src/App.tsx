@@ -429,6 +429,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
   const [showSource, setShowSource] = useState(initialQueueItems[0]?.status !== "Processing" && initialQueueItems[0]?.status !== "Quarantined");
   const [showQueue, setShowQueue] = useState(false);
   const [showApprove, setShowApprove] = useState(false);
+  const [showReprocessConfirm, setShowReprocessConfirm] = useState(false);
   const [dismissItem, setDismissItem] = useState<QueueItem | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [statusFilter, setStatusFilter] = useState<QueueStatus | "All">("All");
@@ -700,6 +701,7 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
     setCommandError(null);
     try {
       await onReprocess({ invoiceId: selected.id, expectedVersion: selected.databaseVersion });
+      setShowReprocessConfirm(false);
       notify("Invoice queued for processing");
     } catch (reason) {
       setCommandError(reason instanceof Error ? reason.message : "Unable to process this invoice again");
@@ -1115,10 +1117,9 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
                   <div>
                     <strong>Upload needs to be processed again</strong>
                     <span>This invoice was not fully processed. Upload it again to continue.</span>
-                    <button className="blocker-action" type="button" disabled={commandPending || !onReprocess} onClick={() => void reprocessSelectedInvoice()}>
+                    <button className="blocker-action" type="button" disabled={commandPending || !onReprocess} onClick={() => { setCommandError(null); setShowReprocessConfirm(true); }}>
                       <RefreshCw size={14} /> {commandPending ? "Queuing..." : "Process again"}
                     </button>
-                    {commandError ? <span className="field-error">{commandError}</span> : null}
                   </div>
                 </div>
               ) : (
@@ -1285,6 +1286,21 @@ export function App({ workspaceName = "Cedar Lane Realty", userEmail = "Ajay Kum
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={() => setDismissItem(null)}>Keep invoice</button>
               <button className="danger-button" type="button" disabled={commandPending || dismissItem.linked} onClick={() => void dismissQueueItem()}><Trash2 size={16} />{commandPending ? "Removing..." : "Remove from queue"}</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showReprocessConfirm ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setShowReprocessConfirm(false)}>
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="reprocess-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-icon"><RefreshCw size={22} /></div>
+            <h2 id="reprocess-title">Process this invoice again?</h2>
+            <p>This re-runs extraction on the original file. Any fields you've already entered manually are kept, but freshly extracted values may change.</p>
+            {commandError ? <div className="modal-error" role="alert"><AlertTriangle size={16} /><span>{commandError}</span></div> : null}
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setShowReprocessConfirm(false)}>Cancel</button>
+              <button className="blocker-action" type="button" disabled={commandPending} onClick={() => void reprocessSelectedInvoice()}><RefreshCw size={14} />{commandPending ? "Queuing..." : "Process again"}</button>
             </div>
           </section>
         </div>
